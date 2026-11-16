@@ -1,0 +1,1 @@
+{"rewrites":[{"destination":"https://catbox.moe/user/api.php","source":"/api/upload-catbox"},{"destination":"https://uguu.se/upload.php","source":"/api/upload-uguu"}]}

@@ -309,6 +309,49 @@ function saveLaunchCache(launches: Launch[], scannedTo: bigint): void {
   } catch { /* storage full or unavailable — non-fatal */ }
 }
 
+/**
+ * Shipped launch seed (public/seed.json): a full-scan snapshot taken at
+ * build time. Used ONLY as the starting cache on a cold load (empty cache)
+ * or when the local cache predates the seed — the bulk scan still covers
+ * the delta from the seed's scannedTo to head, so launches created after
+ * the seed are discovered normally. The seed covers every launch up to
+ * its scannedTo, so merging it with a stale cache cannot skip a launch.
+ * A missing/unreadable seed (or a fetch failure) is a silent no-op.
+ */
+let seedLoadAttempted = false;
+async function loadSeededLaunchCache(): Promise<{ launches: Launch[]; scannedTo: bigint }> {
+  const cache = loadLaunchCache();
+  if (seedLoadAttempted) return cache;
+  seedLoadAttempted = true;
+  try {
+    const res = await fetch("seed.json");
+    if (!res.ok) return cache;
+    const seed = (await res.json()) as {
+      launches: Array<Record<string, unknown>>;
+      scannedTo: string | number;
+    };
+    if (!Array.isArray(seed.launches) || seed.launches.length === 0) return cache;
+    const seedScannedTo = BigInt(seed.scannedTo);
+    if (cache.launches.length > 0 && cache.scannedTo >= seedScannedTo) return cache;
+    const seenCurves = new Set<string>();
+    const seenTokens = new Set<string>();
+    const merged: Launch[] = [];
+    for (const raw of [...cache.launches, ...seed.launches] as Array<Launch & { configId: bigint | string; blockNumber: bigint | string }>) {
+      const curveKey = String(raw.curve).toLowerCase();
+      const tokenKey = String(raw.token).toLowerCase();
+      if (seenCurves.has(curveKey) || seenTokens.has(tokenKey)) continue;
+      seenCurves.add(curveKey);
+      seenTokens.add(tokenKey);
+      merged.push({ ...raw, configId: BigInt(raw.configId), blockNumber: BigInt(raw.blockNumber) });
+    }
+    const scannedTo = cache.scannedTo > seedScannedTo ? cache.scannedTo : seedScannedTo;
+    saveLaunchCache(merged, scannedTo);
+    return { launches: merged, scannedTo };
+  } catch {
+    return cache;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Wallet
 // ---------------------------------------------------------------------------
@@ -2721,8 +2764,9 @@ function base64Utf8(s: string): string {
 
 /**
  * Image state for the create form. A picked file is auto-uploaded to a
- * no-key anonymous host (catbox.moe first, uguu.se fallback) so it gets
- * a public URL — setCreateImageLink(url) is the single funnel: preview,
+ * no-key anonymous host (catbox.moe first, uguu.se fallback) through the
+ * site's own /api/upload-* proxy — the hosts send no CORS headers, so a
+ * direct browser call to them is blocked even though the upload works.
  * metadata, and the launch warning all follow from that one call. Until
  * the upload succeeds (or if it fails), the file lives ONLY in this
  * browser and cannot go into the on-chain metadata. Only the picked
@@ -2776,9 +2820,15 @@ async function fetchWithTimeout(url: string, init: RequestInit, ms: number): Pro
  * Upload one image file to a no-key anonymous host; returns the public
  * direct URL. catbox.moe first (POST user/api.php, reqtype=fileupload,
  * fileToUpload — success is the plain-text https://files.catbox.moe/…
- * link; files persist), uguu.se fallback (POST /upload, files[] — JSON
- * { success, files: [{ url }]}, direct https://d.uguu.se/… link,
+ * link; files persist), uguu.se fallback (POST /upload.php, files[] —
+ * JSON { success, files: [{ url }]}, direct https://d.uguu.se/… link,
  * ~24h retention). No API key anywhere; ONLY this image file is sent.
+ *
+ * Both hosts are called through the site's own same-origin Vercel
+ * rewrite proxy (/api/upload-catbox, /api/upload-uguu) — the hosts send
+ * no Access-Control-Allow-Origin header, so a browser fetch straight to
+ * them is blocked by CORS even though the upload itself works. The
+ * proxy forwards the multipart POST unchanged.
  * Throws when both hosts fail, so the caller can show the fallback.
  */
 async function uploadImageFile(file: File): Promise<string> {
@@ -2786,14 +2836,14 @@ async function uploadImageFile(file: File): Promise<string> {
     const form = new FormData();
     form.append("reqtype", "fileupload");
     form.append("fileToUpload", file);
-    const res = await fetchWithTimeout("https://catbox.moe/user/api.php", { method: "POST", body: form }, 30_000);
+    const res = await fetchWithTimeout("/api/upload-catbox", { method: "POST", body: form }, 30_000);
     const text = (await res.text()).trim();
     if (res.ok && text.startsWith("https://files.catbox.moe/")) return text;
   } catch { /* fall through to uguu.se */ }
   const form = new FormData();
   form.append("files[]", file);
   try {
-    const res = await fetchWithTimeout("https://uguu.se/upload", { method: "POST", body: form }, 90_000);
+    const res = await fetchWithTimeout("/api/upload-uguu", { method: "POST", body: form }, 90_000);
     const json = (await res.json()) as { success?: boolean; files?: Array<{ url?: string }> };
     const url = json?.files?.[0]?.url;
     if (res.ok && json?.success && typeof url === "string" && url.startsWith("https://")) return url;
@@ -3622,7 +3672,10 @@ async function boot(): Promise<void> {
 
   // Restore cached launches FIRST so the list paints instantly, before any
   // network call (verifyCore takes tens of seconds on the public RPC).
-  const cache = loadLaunchCache();
+  // On a cold load the shipped seed.json is the starting cache, so
+  // Discover paints from the seed immediately and the bulk scan only has
+  // to cover the small delta from the seed's scannedTo to head.
+  const cache = await loadSeededLaunchCache();
   state.launches = cache.launches;
   state.scanStatus = cache.launches.length > 0 ? `restored ${cache.launches.length} cached launches` : "idle";
   renderDiscover();

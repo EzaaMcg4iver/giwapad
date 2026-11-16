@@ -3,6 +3,8 @@ import { cpSync, mkdirSync, existsSync } from "node:fs";
 
 mkdirSync("dist", { recursive: true });
 cpSync("public/index.html", "dist/index.html");
+cpSync("public/seed.json", "dist/seed.json");
+cpSync("public/vercel.json", "dist/vercel.json");
 cpSync("src/styles.css", "dist/styles.css");
 
 await esbuild.build({
