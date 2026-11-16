@@ -2154,12 +2154,13 @@ function renderConfigOptions(): boolean {
   }
   sel.onchange = () => renderConfigInfo();
   renderConfigInfo();
+  $("#config-status").textContent = enabled.length > 0 ? "" : "No enabled configs found on this deployment.";
   return enabled.length > 0;
 }
 
 async function loadConfigsForForm(): Promise<void> {
   const sel = $("#create-config") as HTMLSelectElement;
-  const info = $("#config-info");
+  const info = $("#config-status");
   if (configsLoading) return;
   if (state.configs.length > 0) {
     // Already loaded (e.g. preloaded at boot) — just render the dropdown.
@@ -2196,30 +2197,340 @@ function selectedConfig(): LaunchConfig | undefined {
 
 function renderConfigInfo(): void {
   const c = selectedConfig();
-  const info = $("#config-info");
-  if (!c) { info.textContent = ""; return; }
-  info.innerHTML = "";
-  const rows: Array<[string, string]> = [
-    ["Config", `#${c.configId.toString()} (${c.enabled ? "enabled" : "disabled"})`],
-    ["Hash", shortAddr(c.configHash)],
-    ["Owner", shortAddr(c.identity.owner)],
-    ["Token decimals", String(c.config.tokenDecimals)],
-    ["Total supply", fmtAmount(c.config.totalSupply, c.config.tokenDecimals)],
-    ["Migration quote threshold", `${fmtAmount(c.config.migrationQuoteThreshold, 18)} WETH`],
-    ["Migration base threshold", fmtAmount(c.config.migrationBaseThreshold, c.config.tokenDecimals)],
-    ["Cliff fee", `${c.config.cliffFeeBps} bps`],
-    ["Migration mode", String(c.config.migrationMode)],
-    ["Pool creation fee", `${fmtAmount(c.config.poolCreationFee, 18)} ETH`],
-    ["Segments", String(c.segments.length)],
-  ];
-  for (const [k, v] of rows) {
-    const r = el("div", "row");
-    r.appendChild(el("span", "k", k));
-    r.appendChild(el("span", "v", v));
-    info.appendChild(r);
-  }
+  const supply = $("#info-supply");
+  const fee = $("#info-fee");
+  const grad = $("#info-grad");
+  const gradSub = $("#info-grad-sub");
   const dec = $("#create-decimals") as HTMLInputElement;
+  if (!c) {
+    supply.textContent = "—";
+    fee.textContent = "—";
+    grad.textContent = "—";
+    gradSub.textContent = "";
+    dec.value = "";
+    refreshCreateSummary();
+    return;
+  }
+  // Real values from the selected on-chain config — never copied from Tzero.
+  // Supply is comma-grouped for readability (750,000,000,000,000, not 7.5e14).
+  const supplyParts = fmtAmount(c.config.totalSupply, c.config.tokenDecimals).split(".");
+  supply.textContent = supplyParts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (supplyParts[1] ? `.${supplyParts[1]}` : "");
+  fee.textContent = `${fmtAmount(c.config.poolCreationFee, 18)} ETH`;
+  grad.textContent = "Graduates to pool";
+  gradSub.textContent = c.config.migrationQuoteThreshold > 0n
+    ? `at ${fmtAmount(c.config.migrationQuoteThreshold, 18)} WETH`
+    : `at ${fmtAmount(c.config.migrationBaseThreshold, c.config.tokenDecimals)} tokens`;
   dec.value = String(c.config.tokenDecimals);
+  refreshCreateSummary();
+}
+
+// ---------------------------------------------------------------------------
+// Create form — mission briefing (Tzero-style layout, GiwaPad data)
+// ---------------------------------------------------------------------------
+
+/** App's own name/symbol caps. The SDK validator (assertLaunch) and the
+ *  factory ABI place NO length limit on name/symbol — only tokenDecimals
+ *  (6–9) and the metadata URI (2048 UTF-8 bytes) are enforced on-chain —
+ *  so these caps are ours, enforced here and in the inputs' maxlength. */
+const CREATE_NAME_MAX_BYTES = 64;
+const CREATE_SYMBOL_MAX_BYTES = 10;
+const CREATE_DESC_MAX_CHARS = 200;
+/** SDK hard cap: assertMetadataURI rejects a metadataURI over this. */
+const MAX_METADATA_URI_BYTES = 2048;
+/** Image types the drop zone accepts for a local preview. */
+const CREATE_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+const CREATE_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+
+function utf8Bytes(s: string): number {
+  return new TextEncoder().encode(s).length;
+}
+
+function base64Utf8(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+}
+
+/**
+ * Image state for the create form. A picked file lives ONLY in this browser
+ * until a future upload step turns it into a public URL — it has no URL
+ * and cannot go into the on-chain metadata yet. Only a pasted public link
+ * (https:// or ipfs://) can. The upload step (decided by the user: no-key
+ * anonymous host) hooks in here: it calls setCreateImageLink(url) after the
+ * upload, and everything downstream — preview, metadata, launch warning —
+ * follows from that one call.
+ */
+let createFile: { dataUrl: string; fileName: string } | null = null;
+let createLinkUrl = "";
+/** True once the user has typed/pasted their own metadata URI — auto-compose stops then. */
+let metadataUserSet = false;
+let lastAutoMetadata = "";
+
+/** Effective image for preview/metadata: a public link wins, else the local file preview. */
+function effectiveCreateImage(): { kind: "link" | "file"; src: string } | null {
+  if (createLinkUrl) return { kind: "link", src: createLinkUrl };
+  if (createFile) return { kind: "file", src: createFile.dataUrl };
+  return null;
+}
+
+/** Future upload hook: an upload step calls this with the public image URL. */
+function setCreateImageLink(url: string): void {
+  createLinkUrl = url;
+  const link = $("#create-image-link") as HTMLInputElement;
+  link.value = url;
+  $("#create-link-wrap").classList.remove("hidden");
+  refreshCreateImage();
+}
+
+/** The form fields that go into the metadata JSON (image only when public). */
+function createMetadataObject(): Record<string, string> {
+  const name = ($("#create-name") as HTMLInputElement).value.trim();
+  const symbol = ($("#create-symbol") as HTMLInputElement).value.trim().toUpperCase();
+  const desc = ($("#create-desc") as HTMLTextAreaElement).value.trim();
+  const web = ($("#create-link-web") as HTMLInputElement).value.trim();
+  const x = ($("#create-link-x") as HTMLInputElement).value.trim();
+  const tg = ($("#create-link-tg") as HTMLInputElement).value.trim();
+  const meta: Record<string, string> = {};
+  if (name) meta.name = name;
+  if (symbol) meta.symbol = symbol;
+  if (desc) meta.description = desc;
+  if (createLinkUrl) meta.image = createLinkUrl;
+  if (web) meta.website = web;
+  if (x) meta.twitter = x;
+  if (tg) meta.telegram = tg;
+  return meta;
+}
+
+/** Auto-compose a data: metadata URI from the form. Empty when nothing is filled. */
+function composeMetadataURI(): string {
+  const meta = createMetadataObject();
+  if (Object.keys(meta).length === 0) return "";
+  return `data:application/json;base64,${base64Utf8(JSON.stringify(meta))}`;
+}
+
+/** Rewrite the metadata field from the form, unless the user set their own URI. */
+function refreshMetadataURI(): void {
+  const field = $("#create-metadata") as HTMLInputElement;
+  const note = $("#metadata-note");
+  const mode = $("#metadata-mode");
+  if (metadataUserSet) {
+    mode.textContent = "custom";
+    note.textContent = "";
+    note.className = "field-note";
+    return;
+  }
+  mode.textContent = "auto";
+  const composed = composeMetadataURI();
+  if (!composed) {
+    field.value = "";
+    lastAutoMetadata = "";
+    note.textContent = "";
+    note.className = "field-note";
+    return;
+  }
+  if (utf8Bytes(composed) > MAX_METADATA_URI_BYTES) {
+    note.textContent = `Metadata too long (${utf8Bytes(composed)}/${MAX_METADATA_URI_BYTES} bytes) — shorten the description or links, or paste a hosted metadata URI.`;
+    note.className = "field-note error-text";
+    return;
+  }
+  note.textContent = "";
+  note.className = "field-note";
+  field.value = composed;
+  lastAutoMetadata = composed;
+}
+
+/** Live preview card + counters + image note. Runs on every form input. */
+function refreshCreatePreview(): void {
+  const name = ($("#create-name") as HTMLInputElement).value.trim();
+  const symbol = ($("#create-symbol") as HTMLInputElement).value.trim().toUpperCase();
+  const desc = ($("#create-desc") as HTMLTextAreaElement).value;
+  const nameBytes = utf8Bytes(($("#create-name") as HTMLInputElement).value);
+  const symBytes = utf8Bytes(($("#create-symbol") as HTMLInputElement).value);
+  const nameCount = $("#name-count");
+  nameCount.textContent = `${nameBytes}/${CREATE_NAME_MAX_BYTES} bytes`;
+  nameCount.classList.toggle("over", nameBytes > CREATE_NAME_MAX_BYTES);
+  const symCount = $("#symbol-count");
+  symCount.textContent = `${symBytes}/${CREATE_SYMBOL_MAX_BYTES} bytes`;
+  symCount.classList.toggle("over", symBytes > CREATE_SYMBOL_MAX_BYTES);
+  $("#desc-count").textContent = `${desc.length}/${CREATE_DESC_MAX_CHARS}`;
+  $("#preview-symbol").textContent = symbol ? `$${symbol}` : "$TICKER";
+  $("#preview-name").textContent = name || "Mission name";
+  $("#preview-by").textContent = state.account ? `by ${shortAddr(state.account)}` : "by —";
+  $("#sum-ticker").textContent = symbol ? `$${symbol}` : "—";
+  refreshCreateImage();
+  refreshMetadataURI();
+}
+
+/** Drop-zone + preview-card image area. A local file previews here and in the
+ *  preview card, but the note under the zone says plainly it has no public
+ *  URL yet — only a pasted link makes it into the metadata. */
+function refreshCreateImage(): void {
+  const img = effectiveCreateImage();
+  const dzImg = $("#dropzone-img") as HTMLImageElement;
+  const dzPlaceholder = $("#dropzone-placeholder");
+  const removeBtn = $("#dropzone-remove");
+  const status = $("#image-status");
+  const note = $("#create-image-note");
+  const media = $("#create-preview-media");
+  const rocket = document.querySelector("#dropzone-placeholder svg")?.cloneNode(true) as SVGSVGElement | undefined;
+  media.innerHTML = "";
+  if (!img) {
+    dzImg.classList.add("hidden");
+    dzImg.removeAttribute("src");
+    dzPlaceholder.classList.remove("hidden");
+    removeBtn.classList.add("hidden");
+    status.textContent = "";
+    note.textContent = "";
+    note.className = "field-note muted";
+    if (rocket) media.appendChild(rocket);
+    return;
+  }
+  dzPlaceholder.classList.add("hidden");
+  dzImg.src = img.src;
+  dzImg.classList.remove("hidden");
+  removeBtn.classList.remove("hidden");
+  const mediaImg = document.createElement("img");
+  mediaImg.src = img.src;
+  mediaImg.alt = "Token image preview";
+  mediaImg.className = "preview-media-img";
+  mediaImg.onerror = () => { mediaImg.remove(); if (rocket) media.appendChild(rocket); };
+  media.appendChild(mediaImg);
+  if (img.kind === "file") {
+    status.textContent = "local only";
+    note.textContent = "This image only lives in your browser for now — it has no public URL, so it cannot go into the token metadata yet. Paste a public image link below to include it.";
+    note.className = "field-note warn-text";
+  } else {
+    status.textContent = "linked";
+    note.textContent = "";
+    note.className = "field-note muted";
+  }
+}
+
+/** Summary card: creation fee + total to send are real config math. There is
+ *  no initial buy in this flow (the SDK's plain createLaunch does not
+ *  combine creation with a first buy), so those rows stay "—". */
+function refreshCreateSummary(): void {
+  const c = selectedConfig();
+  const fee = c ? `${fmtAmount(c.config.poolCreationFee, 18)} ETH` : "—";
+  $("#sum-fee").textContent = fee;
+  $("#sum-total").textContent = fee;
+}
+
+function validPublicImageLink(url: string): boolean {
+  return url.startsWith("https://") || url.startsWith("ipfs://");
+}
+
+function handleCreateImageFile(file: File | undefined | null): void {
+  const note = $("#create-image-note");
+  if (!file) return;
+  if (!CREATE_IMAGE_TYPES.includes(file.type)) {
+    note.textContent = "That file is not an image — use PNG, JPG, GIF or WebP.";
+    note.className = "field-note error-text";
+    return;
+  }
+  if (file.size > CREATE_IMAGE_MAX_BYTES) {
+    note.textContent = `That image is too big (${(file.size / 1024 / 1024).toFixed(1)} MB) — max 2 MB for a preview.`;
+    note.className = "field-note error-text";
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    createFile = { dataUrl: String(reader.result), fileName: file.name };
+    refreshCreateImage();
+  };
+  reader.onerror = () => {
+    note.textContent = "Could not read that image — try another file.";
+    note.className = "field-note error-text";
+  };
+  reader.readAsDataURL(file);
+}
+
+function clearCreateImage(): void {
+  createFile = null;
+  createLinkUrl = "";
+  ($("#create-image-link") as HTMLInputElement).value = "";
+  ($("#create-image-file") as HTMLInputElement).value = "";
+  refreshCreateImage();
+  refreshMetadataURI();
+}
+
+function initCreateForm(): void {
+  // Fuel bar: 20 empty segments (a fresh token has 0% fuel).
+  const fuel = $("#preview-fuel");
+  for (let i = 0; i < 20; i++) fuel.appendChild(el("span", "fuel-seg-cell"));
+  const nameEl = $("#create-name") as HTMLInputElement;
+  const symEl = $("#create-symbol") as HTMLInputElement;
+  const descEl = $("#create-desc") as HTMLTextAreaElement;
+  nameEl.addEventListener("input", refreshCreatePreview);
+  symEl.addEventListener("input", refreshCreatePreview);
+  descEl.addEventListener("input", refreshCreatePreview);
+  for (const id of ["create-link-web", "create-link-x", "create-link-tg"]) {
+    $(`#${id}`).addEventListener("input", () => {
+      const note = $("#create-links-note");
+      const bad = ["create-link-web", "create-link-x", "create-link-tg"]
+        .map((x) => ($(`#${x}`) as HTMLInputElement).value.trim())
+        .filter((v) => v && !v.startsWith("https://"));
+      note.textContent = bad.length > 0 ? "Links must start with https:// — empty is fine." : "";
+      note.className = bad.length > 0 ? "field-note error-text" : "field-note muted";
+      refreshMetadataURI();
+    });
+  }
+  const metaField = $("#create-metadata") as HTMLInputElement;
+  metaField.addEventListener("input", () => {
+    const v = metaField.value.trim();
+    metadataUserSet = v !== "" && v !== lastAutoMetadata;
+    refreshMetadataURI();
+  });
+  // Image drop zone: click opens the picker, drag-and-drop works, keyboard works.
+  const dz = $("#create-dropzone");
+  const fileInput = $("#create-image-file") as HTMLInputElement;
+  dz.addEventListener("click", (e) => {
+    if ((e.target as HTMLElement).closest("#dropzone-remove")) return;
+    fileInput.click();
+  });
+  dz.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); }
+  });
+  dz.addEventListener("dragover", (e) => { e.preventDefault(); dz.classList.add("drag"); });
+  dz.addEventListener("dragleave", () => dz.classList.remove("drag"));
+  dz.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dz.classList.remove("drag");
+    handleCreateImageFile(e.dataTransfer?.files?.[0]);
+  });
+  fileInput.addEventListener("change", () => {
+    handleCreateImageFile(fileInput.files?.[0]);
+    fileInput.value = "";
+  });
+  $("#dropzone-remove").addEventListener("click", (e) => { e.stopPropagation(); clearCreateImage(); });
+  $("#create-paste-link-toggle").addEventListener("click", () => {
+    const wrap = $("#create-link-wrap");
+    wrap.classList.toggle("hidden");
+    if (!wrap.classList.contains("hidden")) ($("#create-image-link") as HTMLInputElement).focus();
+  });
+  ($("#create-image-link") as HTMLInputElement).addEventListener("input", () => {
+    const v = ($("#create-image-link") as HTMLInputElement).value.trim();
+    const note = $("#create-image-note");
+    if (!v) {
+      createLinkUrl = "";
+      refreshCreateImage();
+      refreshMetadataURI();
+      return;
+    }
+    if (!validPublicImageLink(v)) {
+      note.textContent = "That link must start with https:// or ipfs://.";
+      note.className = "field-note error-text";
+      return;
+    }
+    createLinkUrl = v;
+    refreshCreateImage();
+    refreshMetadataURI();
+  });
+  refreshCreatePreview();
 }
 
 async function handleCreate(): Promise<void> {
@@ -2234,6 +2545,12 @@ async function handleCreate(): Promise<void> {
   const metadataURI = ($("#create-metadata") as HTMLInputElement).value.trim();
   if (!name || !symbol) { resultBox.appendChild(el("div", "error", "Token name and symbol are required.")); return; }
   if (!/^[A-Z0-9]{1,10}$/.test(symbol)) { resultBox.appendChild(el("div", "error", "Symbol must be 1–10 letters/digits.")); return; }
+  if (utf8Bytes(name) > CREATE_NAME_MAX_BYTES) { resultBox.appendChild(el("div", "error", `Token name must be at most ${CREATE_NAME_MAX_BYTES} bytes.`)); return; }
+  if (utf8Bytes(metadataURI) > MAX_METADATA_URI_BYTES) { resultBox.appendChild(el("div", "error", `Metadata URI is too long (${utf8Bytes(metadataURI)}/${MAX_METADATA_URI_BYTES} bytes) — shorten the description or paste a hosted metadata URI.`)); return; }
+  for (const [id, label] of [["create-link-web", "Website"], ["create-link-x", "X"], ["create-link-tg", "Telegram"]] as const) {
+    const v = ($(`#${id}`) as HTMLInputElement).value.trim();
+    if (v && !v.startsWith("https://")) { resultBox.appendChild(el("div", "error", `${label} link must start with https://.`)); return; }
+  }
   try {
     const preview = buildCreateLaunchTx(name, symbol, metadataURI, c.config.tokenDecimals, c.configId, c.config.poolCreationFee);
     const prev = el("div", "preview");
@@ -2243,6 +2560,18 @@ async function handleCreate(): Promise<void> {
     prev.appendChild(el("div", "", `Factory: ${shortAddr(preview.factory)}`));
     prev.appendChild(el("div", "", `Pool creation fee (msg.value): ${fmtAmount(preview.poolCreationFee, 18)} ETH`));
     prev.appendChild(el("div", "", `Metadata URI: ${metadataURI || "(empty)"}`));
+    if (createFile && !createLinkUrl) {
+      // Honesty rule: a locally picked file has no public URL and cannot go
+      // on-chain. Say so BEFORE the user confirms — never silently drop it.
+      const w = el("div", "warn", "The image you picked only lives in this browser — it has no public URL, so this launch will NOT include it in the token metadata. Paste a public image link to include it, or launch without an image.");
+      const fixBtn = el("button", "btn text", "Paste a public image link") as HTMLButtonElement;
+      fixBtn.onclick = () => {
+        $("#create-link-wrap").classList.remove("hidden");
+        ($("#create-image-link") as HTMLInputElement).focus();
+      };
+      w.appendChild(fixBtn);
+      prev.appendChild(w);
+    }
     resultBox.appendChild(prev);
     const goBtn = el("button", "btn primary", "Sign & create launch") as HTMLButtonElement;
     resultBox.appendChild(goBtn);
@@ -2307,6 +2636,7 @@ function showView(name: "discover" | "create" | "detail" | "profile"): void {
   for (const t of ["discover", "create"] as const) {
     $(`#tab-${t}`).classList.toggle("active", t === name);
   }
+  if (name === "create") refreshCreatePreview();
 }
 
 async function verifyChainStatus(): Promise<void> {
@@ -2425,6 +2755,7 @@ async function boot(): Promise<void> {
     renderDiscover();
   };
   $("#create-submit").onclick = () => void handleCreate();
+  initCreateForm();
   renderRecent();
 
   // Restore cached launches FIRST so the list paints instantly, before any

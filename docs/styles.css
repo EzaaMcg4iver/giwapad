@@ -6,6 +6,13 @@
  * Every class the JS depends on keeps its name; this file only styles.
  *
  * Design tokens:
+ * - Font: Inter via Google Fonts CDN (weights 400/500/600/700/800), with
+ *   system-ui fallback. Monospace (ui-monospace) is kept only where the app
+ *   already uses it deliberately (addresses, hashes, tx values).
+ * - Palette: emerald/jade green primary. --accent is the vivid green for
+ *   text accents, borders, focus rings and charts; --accent-solid is the
+ *   deeper green used for filled buttons/active tabs (white text on it:
+ *   ~3.8:1 dark, ~5.5:1 light). Danger red and warning amber stay distinct.
  * - Spacing scale: 4 / 8 / 10 / 12 / 16 / 20 / 24 px (gaps, padding).
  * - Corner radius: 8px small surfaces, 10px controls, 12px cards/panels
  *   (--radius), 999px pills.
@@ -16,6 +23,10 @@
  *   active treatment (filled accent + white text).
  * - Touch targets are at least 40px (44px for the header icon button).
  */
+
+/* Inter is loaded from the Google Fonts CDN (see <head> in index.html);
+   weights 400/500/600/700/800, system-ui fallback if unreachable. */
+
 :root {
   color-scheme: dark;
   --bg: #0d1117;
@@ -24,8 +35,10 @@
   --border: #2d333b;
   --text: #e6edf3;
   --muted: #8b949e;
-  --accent: #7c5cff;
-  --accent-soft: rgba(124, 92, 255, 0.22);
+  --accent: #10b981;
+  --accent-soft: rgba(16, 185, 129, 0.22);
+  --accent-solid: #059669;
+  --selection: rgba(16, 185, 129, 0.35);
   --accent2: #2dd4bf;
   --ok: #3fb950;
   --ok-bg: #0f2a16;
@@ -36,9 +49,9 @@
   --err: #f85149;
   --err-bg: #2a1215;
   --err-border: #5a1d22;
-  --link: #79b8ff;
-  --preview-bg: #1a2436;
-  --preview-border: #2b4a7a;
+  --link: #34d399;
+  --preview-bg: #14261f;
+  --preview-border: #1f4d3a;
   --badge-1: #7ee787;
   --badge-1-border: #2d5a33;
   --badge-2: #f2cc60;
@@ -58,8 +71,10 @@
   --border: #d8d8e0;
   --text: #1c1b1f;
   --muted: #5f6368;
-  --accent: #7c5cff;
-  --accent-soft: rgba(124, 92, 255, 0.12);
+  --accent: #047857;
+  --accent-soft: rgba(4, 120, 87, 0.12);
+  --accent-solid: #047857;
+  --selection: rgba(4, 120, 87, 0.25);
   --accent2: #00897b;
   --ok: #1b8737;
   --ok-bg: #e6f4ea;
@@ -70,25 +85,26 @@
   --err: #b3261e;
   --err-bg: #fdecea;
   --err-border: #f5c6cb;
-  --link: #4f46e5;
-  --preview-bg: #eef2ff;
-  --preview-border: #c7d2fe;
+  --link: #047857;
+  --preview-bg: #e9f7f0;
+  --preview-border: #bfe8d2;
   --badge-1: #137333;
   --badge-1-border: #a3d9a5;
   --badge-2: #8a6d00;
   --badge-2-border: #ffe082;
-  --badge-3: #4f46e5;
-  --badge-3-border: #c7d2fe;
+  --badge-3: #2563eb;
+  --badge-3-border: #bfdbfe;
   --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.08), 0 1px 3px rgba(16, 24, 40, 0.1);
   --shadow-2: 0 4px 8px rgba(16, 24, 40, 0.1), 0 8px 20px rgba(16, 24, 40, 0.08);
 }
 
 * { box-sizing: border-box; }
+::selection { background: var(--selection); }
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-size: 15px;
   line-height: 1.5;
 }
@@ -110,7 +126,7 @@ h4 { margin: 4px 0 8px; font-size: 16px; font-weight: 600; line-height: 1.3; }
 .brand { display: flex; align-items: center; gap: 10px; flex: none; }
 .logo {
   width: 32px; height: 32px; border-radius: 9px; flex: none;
-  background: linear-gradient(135deg, #a78bfa, #7c3aed);
+  background: linear-gradient(135deg, #34d399, #059669);
   display: inline-flex; align-items: center; justify-content: center;
   box-shadow: var(--shadow-1);
 }
@@ -125,7 +141,7 @@ h4 { margin: 4px 0 8px; font-size: 16px; font-weight: 600; line-height: 1.3; }
   transition: background-color 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
 }
 .tab svg { width: 18px; height: 18px; flex: none; }
-.tab.active { background: var(--accent); color: #fff; box-shadow: var(--shadow-1); }
+.tab.active { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; box-shadow: var(--shadow-1); }
 .tab:hover { border-color: var(--border); }
 .tab:active { transform: scale(0.97); }
 .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -163,16 +179,17 @@ main { max-width: 1240px; margin: 0 auto; padding: 20px; }
 .hidden { display: none !important; }
 
 .chip { border-radius: 999px; min-height: 36px; padding: 6px 16px; display: inline-flex; align-items: center; }
-.chip.active { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: var(--shadow-1); }
+.chip.active { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; box-shadow: var(--shadow-1); }
 .count { font-size: 13px; margin: 4px 0; }
 
-input, select {
+input, select, textarea {
   background: var(--panel2); color: var(--text);
   border: 1px solid var(--border); border-radius: 10px;
   padding: 9px 12px; min-height: 44px; font-size: 15px; width: 100%;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
-input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+textarea { font-family: inherit; resize: vertical; }
 label { display: block; font-size: 13px; font-weight: 500; color: var(--muted); margin: 12px 0 4px; }
 
 .btn {
@@ -188,7 +205,7 @@ label { display: block; font-size: 13px; font-weight: 500; color: var(--muted); 
 .btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; box-shadow: var(--shadow-1); }
+.btn.primary { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; font-weight: 600; box-shadow: var(--shadow-1); }
 .btn.primary:hover { filter: brightness(1.12); box-shadow: var(--shadow-2); }
 .btn.text { background: transparent; border-color: transparent; color: var(--accent); }
 .btn.text:hover { background: var(--accent-soft); border-color: transparent; filter: none; }
@@ -201,7 +218,7 @@ label { display: block; font-size: 13px; font-weight: 500; color: var(--muted); 
 .icon-btn svg { width: 20px; height: 20px; }
 .icon-btn:active { transform: scale(0.88) rotate(15deg); }
 .seg { display: flex; gap: 6px; margin: 8px 0; }
-.seg-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: var(--shadow-1); }
+.seg-btn.active { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; box-shadow: var(--shadow-1); }
 
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; margin-top: 12px; }
 .card {
@@ -455,4 +472,69 @@ label { display: block; font-size: 13px; font-weight: 500; color: var(--muted); 
   .tabs { order: 4; flex: 1 1 auto; margin-left: 0; }
   .tab { flex: 1; justify-content: center; padding: 8px 10px; }
   #faucet-btn { order: 4; }
+}
+
+/* Create page — "Launch a mission" (Tzero-style layout, GiwaPad data).
+   Left: Mission briefing card. Right: live preview + summary cards. */
+.create-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; flex-wrap: wrap; margin: 8px 0 4px; }
+.create-title { font-size: 32px; font-weight: 800; margin: 0; line-height: 1.15; }
+.create-sub { margin: 6px 0 0; }
+.create-infoboxes { display: flex; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; box-shadow: var(--shadow-1); }
+.infobox { padding: 10px 16px; display: flex; flex-direction: column; gap: 2px; min-width: 130px; }
+.infobox + .infobox { border-left: 1px solid var(--border); }
+.infobox-k { font-size: 12px; color: var(--muted); }
+.infobox-v { font-size: 15px; font-weight: 700; font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+.infobox-s { font-size: 12px; color: var(--muted); }
+.create-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; margin-top: 16px; }
+.mission-card { margin: 0; }
+.mission-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.mission-head h3 { margin: 0; }
+.field { margin: 14px 0; }
+.field-label { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 13px; font-weight: 500; color: var(--muted); margin-bottom: 4px; }
+.field-label label { margin: 0; }
+.counter { font-size: 12px; color: var(--muted); font-family: ui-monospace, monospace; white-space: nowrap; }
+.counter.over { color: var(--err); font-weight: 700; }
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.field-note { font-size: 12.5px; margin-top: 6px; }
+.field-note.error-text { color: var(--err); }
+.field-note.warn-text { color: var(--warn); }
+.links-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.links-row label { margin: 0 0 4px; }
+/* Image drop zone: dashed blueprint area with a built-in rocket line-art
+   placeholder (GiwaPad's own drawing, not Tzero's artwork). */
+.dropzone { border: 1.5px dashed var(--border); border-radius: var(--radius); background: var(--panel2); cursor: pointer; overflow: hidden; min-height: 220px; display: flex; transition: border-color 0.15s, background-color 0.15s; }
+.dropzone:hover, .dropzone:focus-visible { border-color: var(--accent); outline: none; }
+.dropzone.drag { border-color: var(--accent); background: var(--accent-soft); }
+.dropzone-art { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 20px; color: var(--muted); background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px); background-size: 24px 24px; }
+.dropzone-art svg { width: 180px; height: auto; max-height: 220px; }
+.dropzone-caption { font-size: 13px; }
+.dropzone-img { width: 100%; max-height: 320px; object-fit: contain; display: block; background: var(--panel2); }
+.dropzone-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.create-launch-btn { width: 100%; min-height: 48px; font-size: 16px; margin-top: 8px; }
+.preview { overflow-wrap: anywhere; }
+.preview-card { margin: 0 0 16px; }
+.preview-tags { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.preview-media { border-radius: 10px; overflow: hidden; background: var(--panel2); border: 1px solid var(--border); min-height: 180px; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.preview-media svg { width: 140px; height: auto; padding: 16px; }
+.preview-media-img { width: 100%; height: 200px; object-fit: cover; display: block; }
+.preview-symbol { font-size: 22px; font-weight: 800; margin-top: 12px; word-break: break-word; }
+.preview-by { margin-top: 10px; font-size: 13px; }
+.summary-card { margin: 0; }
+
+@media (max-width: 1024px) {
+  .create-grid { grid-template-columns: minmax(0, 1fr); }
+  /* Stack the side cards under the form, in DOM order. */
+  .create-side { display: contents; }
+}
+
+@media (max-width: 640px) {
+  .create-title { font-size: 26px; }
+  /* Stack the info boxes full-width — the 15-digit supply cannot fit in a
+     ~110px column without overlapping its neighbour. */
+  .create-infoboxes { width: 100%; flex-direction: column; }
+  .infobox { flex: 1; min-width: 0; padding: 10px 12px; }
+  .infobox + .infobox { border-left: none; border-top: 1px solid var(--border); }
+  .field-row { grid-template-columns: 1fr; }
+  .links-row { grid-template-columns: 1fr; }
+  .dropzone-art svg { width: 150px; }
 }
