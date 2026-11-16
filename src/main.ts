@@ -120,6 +120,10 @@ const state = {
   search: "",
   detailCurve: null as string | null,
   slippageBps: 100,
+  view: "discover" as "discover" | "create" | "detail" | "profile",
+  // Cached non-zero token holdings, keyed by token address (lowercase).
+  holdings: new Map<string, { balance: bigint; decimals: number; symbol: string }>(),
+  holdingsFor: null as Address | null,
 };
 
 const LAUNCH_CACHE_KEY = "giwapad.launches.v1";
@@ -159,9 +163,12 @@ async function connectWallet(): Promise<void> {
     if (accounts.length === 0) throw new Error("No account returned by the wallet.");
     await ensureGiwaChain();
     state.account = accounts[0];
+    state.holdings.clear();
+    state.holdingsFor = null;
     await refreshBalances();
     renderWallet();
     renderDiscover();
+    if (state.view === "profile") void renderProfile();
     if (state.detailCurve) renderDetail(state.detailCurve);
   } catch (err) {
     showError(box, err);
@@ -198,8 +205,11 @@ function renderWallet(): void {
     state.account = null;
     state.ethBalance = 0n;
     state.wethBalance = 0n;
+    state.holdings.clear();
+    state.holdingsFor = null;
     renderWallet();
     renderDiscover();
+    if (state.view === "profile") void renderProfile();
   };
   box.appendChild(dc);
 }
@@ -240,6 +250,42 @@ function filteredLaunches(): EnrichedLaunch[] {
   });
 }
 
+function launchCard(l: EnrichedLaunch): HTMLElement {
+  const card = el("div", "card");
+  card.onclick = () => { state.detailCurve = l.curve; showView("detail"); void renderDetail(l.curve); };
+  const head = el("div", "card-head");
+  head.appendChild(el("div", "card-title", l.meta ? `${l.meta.name} (${l.meta.symbol})` : shortAddr(l.token)));
+  head.appendChild(el("span", `badge status-${l.curveData?.state.status ?? -1}`, l.curveData ? curveStatusLabel(l.curveData.state.status) : "Loading…"));
+  card.appendChild(head);
+  const rows: Array<[string, string]> = [
+    ["Token", shortAddr(l.token)],
+    ["Curve", shortAddr(l.curve)],
+    ["Creator", shortAddr(l.creator)],
+    ["Config", `#${l.configId.toString()}`],
+  ];
+  if (l.curveData && l.meta) {
+    rows.push(["Price", `${l.price ?? "…"} WETH / ${l.meta.symbol}`]);
+    rows.push(["Raised", `${fmtAmount(l.curveData.state.quoteReserve, 18)} WETH`]);
+    rows.push(["Graduation", `${(l.curveData.progress.progressBps / 100).toFixed(1)}%`]);
+  } else if (l.loadError) {
+    rows.push(["Note", `Could not load curve state: ${l.loadError}`]);
+  }
+  for (const [k, v] of rows) {
+    const r = el("div", "row");
+    r.appendChild(el("span", "k", k));
+    r.appendChild(el("span", "v", v));
+    card.appendChild(r);
+  }
+  if (l.curveData) {
+    const bar = el("div", "bar");
+    const fill = el("div", "bar-fill");
+    fill.style.width = `${Math.min(100, l.curveData.progress.progressBps / 100)}%`;
+    bar.appendChild(fill);
+    card.appendChild(bar);
+  }
+  return card;
+}
+
 function renderDiscover(): void {
   const grid = $("#launch-grid");
   grid.innerHTML = "";
@@ -253,39 +299,7 @@ function renderDiscover(): void {
     return;
   }
   for (const l of items) {
-    const card = el("div", "card");
-    card.onclick = () => { state.detailCurve = l.curve; showView("detail"); void renderDetail(l.curve); };
-    const head = el("div", "card-head");
-    head.appendChild(el("div", "card-title", l.meta ? `${l.meta.name} (${l.meta.symbol})` : shortAddr(l.token)));
-    head.appendChild(el("span", `badge status-${l.curveData?.state.status ?? -1}`, l.curveData ? curveStatusLabel(l.curveData.state.status) : "Loading…"));
-    card.appendChild(head);
-    const rows: Array<[string, string]> = [
-      ["Token", shortAddr(l.token)],
-      ["Curve", shortAddr(l.curve)],
-      ["Creator", shortAddr(l.creator)],
-      ["Config", `#${l.configId.toString()}`],
-    ];
-    if (l.curveData && l.meta) {
-      rows.push(["Price", `${l.price ?? "…"} WETH / ${l.meta.symbol}`]);
-      rows.push(["Raised", `${fmtAmount(l.curveData.state.quoteReserve, 18)} WETH`]);
-      rows.push(["Graduation", `${(l.curveData.progress.progressBps / 100).toFixed(1)}%`]);
-    } else if (l.loadError) {
-      rows.push(["Note", `Could not load curve state: ${l.loadError}`]);
-    }
-    for (const [k, v] of rows) {
-      const r = el("div", "row");
-      r.appendChild(el("span", "k", k));
-      r.appendChild(el("span", "v", v));
-      card.appendChild(r);
-    }
-    if (l.curveData) {
-      const bar = el("div", "bar");
-      const fill = el("div", "bar-fill");
-      fill.style.width = `${Math.min(100, l.curveData.progress.progressBps / 100)}%`;
-      bar.appendChild(fill);
-      card.appendChild(bar);
-    }
-    grid.appendChild(card);
+    grid.appendChild(launchCard(l));
   }
 }
 
@@ -334,6 +348,189 @@ async function refreshLaunches(): Promise<void> {
     state.scanStatus = "scan failed";
     renderDiscover();
     if (statusEl) showError(statusEl, err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Profile
+// ---------------------------------------------------------------------------
+
+let profileRun = 0;
+
+function myLaunches(): EnrichedLaunch[] {
+  if (!state.account) return [];
+  const me = state.account.toLowerCase();
+  return state.launches.filter((l) => l.creator.toLowerCase() === me);
+}
+
+/** Read balanceOf for every known launch token (small batches); keep non-zero. */
+async function loadHoldings(account: Address): Promise<void> {
+  const tokens = state.launches.map((l) => l.token);
+  const fresh = new Map<string, { balance: bigint; decimals: number; symbol: string }>();
+  const BATCH = 5;
+  for (let i = 0; i < tokens.length; i += BATCH) {
+    const batch = tokens.slice(i, i + BATCH);
+    const results = await Promise.all(batch.map(async (token) => {
+      try {
+        return { token, bal: await getTokenBalance(token, account) };
+      } catch {
+        return { token, bal: null as bigint | null };
+      }
+    }));
+    for (const { token, bal } of results) {
+      if (bal !== null && bal > 0n) {
+        fresh.set(token.toLowerCase(), { balance: bal, decimals: 18, symbol: shortAddr(token) });
+      }
+    }
+  }
+  // Resolve real symbol/decimals for the (usually few) tokens actually held.
+  for (const [key, h] of fresh) {
+    try {
+      const meta = await getTokenMeta(key as Address);
+      h.decimals = meta.decimals;
+      h.symbol = meta.symbol;
+    } catch { /* keep the fallback */ }
+  }
+  state.holdings = fresh;
+  state.holdingsFor = account;
+}
+
+async function renderProfile(): Promise<void> {
+  const run = ++profileRun;
+  const view = $("#view-profile");
+  view.innerHTML = "";
+  view.appendChild(el("h2", "", "Profile"));
+
+  if (!state.account) {
+    view.appendChild(el("div", "muted", "Connect your wallet to see your launches and token holdings on GIWA Sepolia."));
+    const b = el("button", "btn primary", "Connect wallet") as HTMLButtonElement;
+    b.onclick = () => void connectWallet();
+    view.appendChild(b);
+    return;
+  }
+  const account = state.account;
+
+  // Wallet identity + balances.
+  const idPanel = el("div", "panel");
+  idPanel.appendChild(el("h3", "", "Wallet"));
+  const addrRow = el("div", "row");
+  addrRow.appendChild(el("span", "k", "Address"));
+  const addrVal = el("span", "v");
+  addrVal.appendChild(el("span", "addr", account));
+  addrRow.appendChild(addrVal);
+  idPanel.appendChild(addrRow);
+  const actions = el("div", "seg");
+  const copyBtn = el("button", "btn", "Copy address") as HTMLButtonElement;
+  copyBtn.onclick = async () => {
+    const done = () => { copyBtn.textContent = "Copied ✓"; setTimeout(() => { copyBtn.textContent = "Copy address"; }, 2000); };
+    try {
+      await navigator.clipboard.writeText(account);
+      done();
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = account;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); done(); } catch { copyBtn.textContent = "Copy failed"; }
+      document.body.removeChild(ta);
+    }
+  };
+  actions.appendChild(copyBtn);
+  const expLink = explorerLink(account, "View on explorer");
+  expLink.className = "btn";
+  actions.appendChild(expLink);
+  idPanel.appendChild(actions);
+  const balBox = el("div", "muted", "Loading balances…");
+  idPanel.appendChild(balBox);
+  view.appendChild(idPanel);
+
+  const refreshBtn = el("button", "btn", "↻ Refresh") as HTMLButtonElement;
+  refreshBtn.onclick = () => void renderProfile();
+  view.appendChild(refreshBtn);
+
+  // Launch saya.
+  const mine = myLaunches();
+  const launchSec = el("div", "");
+  launchSec.appendChild(el("h3", "", "Launch saya"));
+  const launchNote = el("div", "muted", mine.length === 0
+    ? "Kamu belum membuat launch apa pun (dari launch yang sudah ditemukan sejauh ini)."
+    : `${mine.length} launch dibuat oleh wallet ini.`);
+  launchSec.appendChild(launchNote);
+  const grid = el("div", "grid");
+  launchSec.appendChild(grid);
+  view.appendChild(launchSec);
+
+  // Token yang saya pegang.
+  const holdSec = el("div", "");
+  holdSec.appendChild(el("h3", "", "Token yang saya pegang"));
+  const holdBox = el("div", "muted", "Loading balances…");
+  holdSec.appendChild(holdBox);
+  view.appendChild(holdSec);
+
+  // Live reads, then fill in. Abort quietly if the user navigated away.
+  const stillHere = () => run === profileRun && state.view === "profile" && state.account === account;
+
+  try {
+    await refreshBalances();
+    if (!stillHere()) return;
+    renderWallet();
+    balBox.innerHTML = "";
+    for (const [k, v] of [["ETH", fmtAmount(state.ethBalance, 18)], ["WETH", fmtAmount(state.wethBalance, 18)]] as Array<[string, string]>) {
+      const r = el("div", "row");
+      r.appendChild(el("span", "k", k));
+      r.appendChild(el("span", "v", v));
+      balBox.appendChild(r);
+    }
+  } catch (err) {
+    balBox.textContent = `Could not load balances: ${err instanceof Error ? err.message : String(err)}`;
+  }
+
+  // Enrich my launches (meta + curve state) if not loaded yet.
+  for (const l of mine) {
+    if (l.meta && l.curveData) continue;
+    try {
+      l.meta = await getTokenMeta(l.token);
+      l.curveData = await getCurveFull(l.curve);
+      l.price = priceFromSqrtPrice(l.curveData.state.sqrtPrice, l.meta.decimals, 18);
+    } catch (err) {
+      l.loadError = err instanceof Error ? err.message : String(err);
+    }
+    if (!stillHere()) return;
+  }
+  grid.innerHTML = "";
+  if (mine.length === 0) {
+    grid.appendChild(el("div", "empty", "Belum ada launch."));
+  }
+  for (const l of mine) {
+    grid.appendChild(launchCard(l));
+  }
+
+  // Holdings.
+  try {
+    await loadHoldings(account);
+    if (!stillHere()) return;
+    holdBox.innerHTML = "";
+    if (state.holdings.size === 0) {
+      holdBox.textContent = "Kamu belum memegang token apa pun dari launch yang dikenal di GiwaPad.";
+    } else {
+      for (const [token, h] of state.holdings) {
+        const r = el("div", "row");
+        r.style.cursor = "pointer";
+        r.appendChild(el("span", "k", h.symbol));
+        r.appendChild(el("span", "v", `${fmtAmount(h.balance, h.decimals)} ${h.symbol}`));
+        r.onclick = () => {
+          const launch = state.launches.find((x) => x.token.toLowerCase() === token);
+          if (launch) { state.detailCurve = launch.curve; showView("detail"); void renderDetail(launch.curve); }
+        };
+        holdBox.appendChild(r);
+      }
+    }
+  } catch (err) {
+    holdBox.textContent = `Could not load holdings: ${err instanceof Error ? err.message : String(err)}`;
+  }
+
+  if (mine.length === 0 && state.holdings.size === 0) {
+    view.appendChild(el("div", "empty", "Kamu belum punya launch dan belum memegang token apa pun dari launch yang dikenal di GiwaPad."));
   }
 }
 
@@ -784,31 +981,52 @@ async function renderDetail(curve: string): Promise<void> {
 // Create launch
 // ---------------------------------------------------------------------------
 
+let configsLoading = false;
+
+function renderConfigOptions(): boolean {
+  const sel = $("#create-config") as HTMLSelectElement;
+  const enabled = state.configs.filter((c) => c.enabled);
+  sel.innerHTML = "";
+  for (const c of enabled) {
+    const opt = document.createElement("option");
+    opt.value = c.configId.toString();
+    opt.textContent = `Config #${c.configId.toString()} — ${c.segments.length} segment(s), ${c.config.tokenDecimals} decimals, migration ${fmtAmount(c.config.migrationQuoteThreshold, 18)} WETH`;
+    sel.appendChild(opt);
+  }
+  sel.onchange = () => renderConfigInfo();
+  renderConfigInfo();
+  return enabled.length > 0;
+}
+
 async function loadConfigsForForm(): Promise<void> {
   const sel = $("#create-config") as HTMLSelectElement;
   const info = $("#config-info");
+  if (configsLoading) return;
+  if (state.configs.length > 0) {
+    // Already loaded (e.g. preloaded at boot) — just render the dropdown.
+    if (!renderConfigOptions()) info.textContent = "No enabled configs found on this deployment.";
+    return;
+  }
+  configsLoading = true;
   sel.innerHTML = "";
   info.textContent = "Loading configs from chain…";
   try {
-    if (state.configs.length === 0) {
-      const res = await listConfigs(10);
-      state.configs = res.configs;
-    }
-    const enabled = state.configs.filter((c) => c.enabled);
-    if (enabled.length === 0) {
+    const res = await Promise.race([
+      listConfigs(10),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Timed out after 60s — the RPC is slow or unreachable.")), 60_000)),
+    ]);
+    state.configs = res.configs;
+    if (!renderConfigOptions()) {
       info.textContent = "No enabled configs found on this deployment.";
-      return;
     }
-    for (const c of enabled) {
-      const opt = document.createElement("option");
-      opt.value = c.configId.toString();
-      opt.textContent = `Config #${c.configId.toString()} — ${c.segments.length} segment(s), ${c.config.tokenDecimals} decimals, migration ${fmtAmount(c.config.migrationQuoteThreshold, 18)} WETH`;
-      sel.appendChild(opt);
-    }
-    sel.onchange = () => renderConfigInfo();
-    renderConfigInfo();
   } catch (err) {
     showError(info, err);
+    const retry = el("button", "btn", "↻ Retry") as HTMLButtonElement;
+    retry.onclick = () => void loadConfigsForForm();
+    info.appendChild(retry);
+  } finally {
+    configsLoading = false;
   }
 }
 
@@ -896,11 +1114,12 @@ async function handleCreate(): Promise<void> {
 // Views / boot
 // ---------------------------------------------------------------------------
 
-function showView(name: "discover" | "create" | "detail"): void {
-  for (const v of ["discover", "create", "detail"] as const) {
+function showView(name: "discover" | "create" | "detail" | "profile"): void {
+  state.view = name;
+  for (const v of ["discover", "create", "detail", "profile"] as const) {
     $("#view-" + v).classList.toggle("hidden", v !== name);
   }
-  for (const t of ["discover", "create"] as const) {
+  for (const t of ["discover", "create", "profile"] as const) {
     $(`#tab-${t}`).classList.toggle("active", t === name);
   }
 }
@@ -911,6 +1130,7 @@ async function boot(): Promise<void> {
 
   $("#tab-discover").onclick = () => { showView("discover"); renderDiscover(); };
   $("#tab-create").onclick = () => { showView("create"); void loadConfigsForForm(); };
+  $("#tab-profile").onclick = () => { showView("profile"); void renderProfile(); };
   $("#refresh-btn").onclick = () => void refreshLaunches();
   $("#search-input").oninput = (e) => { state.search = (e.target as HTMLInputElement).value; renderDiscover(); };
   for (const f of ["all", "active", "near", "graduated", "mine"] as const) {
@@ -931,6 +1151,16 @@ async function boot(): Promise<void> {
   state.scanStatus = cache.launches.length > 0 ? `restored ${cache.launches.length} cached launches` : "idle";
   renderDiscover();
   void enrichLaunches();
+
+  // Preload the launch configs on the fast client so the Create form's
+  // dropdown is already populated when the user opens it (it used to wait
+  // behind the bulk launch scan).
+  void loadConfigsForForm();
+
+  // Deep links: #discover (default), #create, #profile.
+  const hash = location.hash.replace("#", "");
+  if (hash === "create") { showView("create"); void loadConfigsForForm(); }
+  else if (hash === "profile") { showView("profile"); void renderProfile(); }
 
   // Chain status
   const statusEl = $("#chain-status");

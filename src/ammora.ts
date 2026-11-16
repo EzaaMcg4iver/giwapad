@@ -107,14 +107,36 @@ export function pacedHttp(url: string, intervalMs = 600): Transport {
 }
 
 let publicClient: PublicClient | null = null;
+/**
+ * Default client for interactive reads (configs, quotes, balances, curve
+ * state). Plain HTTP, no pacing: these are user-triggered and must not wait
+ * behind the bulk launch scan.
+ */
 export function getPublicClient(): PublicClient {
   if (!publicClient) {
     publicClient = createPublicClient({
       chain: giwaSepolia,
-      transport: pacedHttp(RPC_URL),
+      transport: http(RPC_URL, { retryCount: 1 }),
     }) as PublicClient;
   }
   return publicClient;
+}
+
+let scanClient: PublicClient | null = null;
+/**
+ * Paced, serialized client used ONLY by the bulk log scan (scanLaunches).
+ * The scan issues thousands of RPC calls; the 600 ms pacing keeps it inside
+ * the public RPC's limits. Nothing else may use this client, or interactive
+ * reads would queue behind the scan for ~25 minutes on first load.
+ */
+export function getScanClient(): PublicClient {
+  if (!scanClient) {
+    scanClient = createPublicClient({
+      chain: giwaSepolia,
+      transport: pacedHttp(RPC_URL),
+    }) as PublicClient;
+  }
+  return scanClient;
 }
 
 export function getWalletClient(): WalletClient {
@@ -222,7 +244,6 @@ export async function listConfigs(limit = 10): Promise<{ nextConfigId: bigint; c
   const count = Math.min(limit, Number(total));
   const configs: LaunchConfig[] = [];
   for (let i = 0; i < count; i++) {
-    if (i > 0) await new Promise((r) => setTimeout(r, 700));
     configs.push(await getAmmoraV4ConfigAtBlock(client, REGISTRY, BigInt(i + 1), blockNumber));
   }
   return { nextConfigId, configs, blockNumber };
@@ -244,7 +265,8 @@ export async function scanLaunches(
   toBlock: bigint,
   onCheckpoint?: (scannedTo: bigint) => void,
 ): Promise<Launch[]> {
-  const client = getPublicClient();
+  // Bulk scan: the ONLY reader on the paced client (see getScanClient).
+  const client = getScanClient();
   const logs = await scanAmmoraLogs({
     clients: [client],
     fromBlock,
