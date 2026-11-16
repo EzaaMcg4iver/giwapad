@@ -374,12 +374,39 @@ function closeWalletMenu(): void {
   if (btn) btn.setAttribute("aria-expanded", "false");
 }
 
+/** Close the mobile hamburger nav, if it is open. Safe to call anytime. */
+function closeMobileNav(): void {
+  const nav = document.querySelector("#mobile-nav");
+  if (nav) nav.classList.add("hidden");
+  const btn = document.querySelector<HTMLButtonElement>("#nav-toggle");
+  if (btn) {
+    btn.setAttribute("aria-expanded", "false");
+    btn.setAttribute("aria-label", "Open menu");
+    btn.classList.remove("open");
+  }
+}
+
+/** Open the mobile hamburger nav (closes the wallet menu — only one open). */
+function openMobileNav(): void {
+  closeWalletMenu();
+  const nav = $("#mobile-nav");
+  nav.classList.remove("hidden");
+  const btn = $("#nav-toggle") as HTMLButtonElement;
+  btn.setAttribute("aria-expanded", "true");
+  btn.setAttribute("aria-label", "Close menu");
+  btn.classList.add("open");
+  nav.querySelector<HTMLElement>(".wallet-menu-item")?.focus();
+}
+
 function renderWallet(): void {
   const box = $("#wallet-status");
   box.innerHTML = "";
   if (!state.account) {
-    const b = el("button", "btn primary", "Connect wallet") as HTMLButtonElement;
-    b.onclick = () => void connectWallet();
+    // Short "Connect" label on mobile (the full label does not fit the
+    // single mobile header row); CSS swaps the visible span at <=900px.
+    const b = el("button", "btn primary") as HTMLButtonElement;
+    b.append(el("span", "wallet-label-full", "Connect wallet"), el("span", "wallet-label-short", "Connect"));
+    b.onclick = () => { closeMobileNav(); void connectWallet(); };
     box.appendChild(b);
     return;
   }
@@ -410,6 +437,7 @@ function renderWallet(): void {
   menu.appendChild(dcItem);
   b.onclick = () => {
     if (menu.classList.contains("hidden")) {
+      closeMobileNav();
       menu.classList.remove("hidden");
       b.setAttribute("aria-expanded", "true");
       profileItem.focus();
@@ -2803,9 +2831,11 @@ function showView(name: "discover" | "create" | "detail" | "profile"): void {
     $("#view-" + v).classList.toggle("hidden", v !== name);
   }
   // Only Discover and Create Launch live in the nav now; Profile is reached
-  // from the wallet dropdown, and Detail never has an active tab.
+  // from the wallet dropdown, and Detail never has an active tab. The mobile
+  // hamburger items mirror the desktop tabs' active state.
   for (const t of ["discover", "create"] as const) {
     $(`#tab-${t}`).classList.toggle("active", t === name);
+    $(`#mnav-${t}`).classList.toggle("active", t === name);
   }
   if (name === "create") refreshCreatePreview();
 }
@@ -2866,6 +2896,27 @@ async function boot(): Promise<void> {
 
   $("#tab-discover").onclick = () => { try { history.replaceState(null, "", "#discover"); } catch { /* non-fatal */ } showView("discover"); renderDiscover(); ensureBackgroundStarted(); };
   $("#tab-create").onclick = () => { try { history.replaceState(null, "", "#create"); } catch { /* non-fatal */ } showView("create"); void loadConfigsForForm(); };
+  // Mobile hamburger nav: the same Discover / Create Launch actions as the
+  // desktop tabs (which are hidden on mobile), plus the Faucet link. An item
+  // tap navigates and closes the menu.
+  const navToggle = $("#nav-toggle") as HTMLButtonElement;
+  navToggle.onclick = () => {
+    const nav = $("#mobile-nav");
+    if (nav.classList.contains("hidden")) openMobileNav();
+    else closeMobileNav();
+  };
+  $("#mnav-discover").onclick = () => { closeMobileNav(); $("#tab-discover").click(); };
+  $("#mnav-create").onclick = () => { closeMobileNav(); $("#tab-create").click(); };
+  $("#mnav-faucet").onclick = () => closeMobileNav();
+  // Mobile nav: close on outside click.
+  document.addEventListener("click", (e) => {
+    const nav = document.querySelector("#mobile-nav");
+    if (!nav || nav.classList.contains("hidden")) return;
+    const target = e.target as Node;
+    if (navToggle.contains(target)) return;
+    if (nav.contains(target)) return;
+    closeMobileNav();
+  });
   // Wallet dropdown: close on outside click / Escape; arrow keys move between
   // the menu items. Registered once at boot; the menu itself is rendered by
   // renderWallet() whenever the account state changes.
@@ -2875,20 +2926,28 @@ async function boot(): Promise<void> {
     if (wrap.contains(e.target as Node)) return;
     closeWalletMenu();
   });
+  // Wallet dropdown + mobile nav: close on Escape; arrow keys move between
+  // the open menu's items. Only one menu can be open at a time.
   document.addEventListener("keydown", (e) => {
-    const menu = document.querySelector<HTMLElement>(".wallet-menu:not(.hidden)");
+    const walletMenu = document.querySelector<HTMLElement>(".wallet-menu:not(.hidden)");
+    const mobileNav = document.querySelector<HTMLElement>("#mobile-nav:not(.hidden)");
     if (e.key === "Escape") {
-      if (menu) {
+      if (walletMenu) {
         closeWalletMenu();
         document.querySelector<HTMLButtonElement>(".wallet-btn")?.focus();
       }
+      if (mobileNav) {
+        closeMobileNav();
+        (document.querySelector("#nav-toggle") as HTMLButtonElement | null)?.focus();
+      }
       return;
     }
+    const menu = walletMenu ?? mobileNav;
     if (!menu) return;
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    const items = [...menu.querySelectorAll<HTMLButtonElement>(".wallet-menu-item")];
+    const items = [...menu.querySelectorAll<HTMLElement>(".wallet-menu-item")];
     if (items.length === 0) return;
-    const i = items.indexOf(document.activeElement as HTMLButtonElement);
+    const i = items.indexOf(document.activeElement as HTMLElement);
     e.preventDefault();
     const next = e.key === "ArrowDown" ? (i + 1) % items.length : (i - 1 + items.length) % items.length;
     items[next]?.focus();
