@@ -1,0 +1,25 @@
+{
+  "name": "giwapad",
+  "version": "0.1.0",
+  "description": "GiwaPad — token launchpad on GIWA Sepolia testnet, built with the Ammora SDK 0.3.9",
+  "main": "index.js",
+  "scripts": {
+    "build": "node build.mjs",
+    "serve": "node serve.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@ammora-protocol/math": "0.3.0",
+    "@ammora-protocol/sdk": "0.3.9",
+    "viem": "2.33.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.0",
+    "typescript": "5.6.3"
+  },
+  "private": true,
+  "type": "module"
+}
