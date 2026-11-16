@@ -3,7 +3,7 @@
  * Ammora SDK 0.3.9. Static frontend, no backend.
  *
  * Every number on screen comes from a real chain read. Writes are sent only
- * through the user's own connected wallet (MetaMask/Rabby). This app never
+ * through the user's own connected wallet (any injected EIP-1193 wallet). This app never
  * asks for, stores, or uses a seed phrase or private key.
  */
 import {
@@ -355,6 +355,25 @@ async function refreshBalances(): Promise<void> {
   state.wethBalance = weth;
 }
 
+function disconnectWallet(): void {
+  state.account = null;
+  state.ethBalance = 0n;
+  state.wethBalance = 0n;
+  state.holdings.clear();
+  state.holdingsFor = null;
+  renderWallet();
+  renderDiscover();
+  if (state.view === "profile") void renderProfile();
+}
+
+/** Close the wallet dropdown menu, if it is open. Safe to call anytime. */
+function closeWalletMenu(): void {
+  const menu = document.querySelector(".wallet-menu");
+  if (menu) menu.classList.add("hidden");
+  const btn = document.querySelector<HTMLButtonElement>(".wallet-btn");
+  if (btn) btn.setAttribute("aria-expanded", "false");
+}
+
 function renderWallet(): void {
   const box = $("#wallet-status");
   box.innerHTML = "";
@@ -362,26 +381,45 @@ function renderWallet(): void {
     const b = el("button", "btn primary", "Connect wallet") as HTMLButtonElement;
     b.onclick = () => void connectWallet();
     box.appendChild(b);
-    const hint = el("span", "muted", "MetaMask / Rabby · GIWA Sepolia");
-    box.appendChild(hint);
     return;
   }
-  const addr = el("span", "addr", shortAddr(state.account));
-  box.appendChild(addr);
-  box.appendChild(el("span", "muted", `ETH ${fmtAmount(state.ethBalance, 18, 4)}`));
-  box.appendChild(el("span", "muted", `WETH ${fmtAmount(state.wethBalance, 18, 4)}`));
-  const dc = el("button", "btn text", "Disconnect") as HTMLButtonElement;
-  dc.onclick = () => {
-    state.account = null;
-    state.ethBalance = 0n;
-    state.wethBalance = 0n;
-    state.holdings.clear();
-    state.holdingsFor = null;
-    renderWallet();
-    renderDiscover();
-    if (state.view === "profile") void renderProfile();
+  // Connected: one button with the short address only. Clicking it opens a
+  // dropdown with Profile and Disconnect — no wallet-brand or chain label.
+  const wrap = el("div", "wallet-menu-wrap");
+  const b = el("button", "btn primary wallet-btn", shortAddr(state.account)) as HTMLButtonElement;
+  b.setAttribute("aria-haspopup", "menu");
+  b.setAttribute("aria-expanded", "false");
+  b.title = state.account;
+  const menu = el("div", "wallet-menu hidden");
+  menu.setAttribute("role", "menu");
+  const profileItem = el("button", "wallet-menu-item", "Profile") as HTMLButtonElement;
+  profileItem.setAttribute("role", "menuitem");
+  profileItem.onclick = () => {
+    closeWalletMenu();
+    try { history.replaceState(null, "", "#profile"); } catch { /* non-fatal */ }
+    showView("profile");
+    void renderProfile();
   };
-  box.appendChild(dc);
+  const dcItem = el("button", "wallet-menu-item danger", "Disconnect wallet") as HTMLButtonElement;
+  dcItem.setAttribute("role", "menuitem");
+  dcItem.onclick = () => {
+    closeWalletMenu();
+    disconnectWallet();
+  };
+  menu.appendChild(profileItem);
+  menu.appendChild(dcItem);
+  b.onclick = () => {
+    if (menu.classList.contains("hidden")) {
+      menu.classList.remove("hidden");
+      b.setAttribute("aria-expanded", "true");
+      profileItem.focus();
+    } else {
+      closeWalletMenu();
+    }
+  };
+  wrap.appendChild(b);
+  wrap.appendChild(menu);
+  box.appendChild(wrap);
 }
 
 async function sendTx(tx: { to: Address; data?: Hex; value?: bigint }): Promise<Hash> {
@@ -2264,7 +2302,9 @@ function showView(name: "discover" | "create" | "detail" | "profile"): void {
   for (const v of ["discover", "create", "detail", "profile"] as const) {
     $("#view-" + v).classList.toggle("hidden", v !== name);
   }
-  for (const t of ["discover", "create", "profile"] as const) {
+  // Only Discover and Create Launch live in the nav now; Profile is reached
+  // from the wallet dropdown, and Detail never has an active tab.
+  for (const t of ["discover", "create"] as const) {
     $(`#tab-${t}`).classList.toggle("active", t === name);
   }
 }
@@ -2325,7 +2365,33 @@ async function boot(): Promise<void> {
 
   $("#tab-discover").onclick = () => { try { history.replaceState(null, "", "#discover"); } catch { /* non-fatal */ } showView("discover"); renderDiscover(); ensureBackgroundStarted(); };
   $("#tab-create").onclick = () => { try { history.replaceState(null, "", "#create"); } catch { /* non-fatal */ } showView("create"); void loadConfigsForForm(); };
-  $("#tab-profile").onclick = () => { try { history.replaceState(null, "", "#profile"); } catch { /* non-fatal */ } showView("profile"); void renderProfile(); };
+  // Wallet dropdown: close on outside click / Escape; arrow keys move between
+  // the menu items. Registered once at boot; the menu itself is rendered by
+  // renderWallet() whenever the account state changes.
+  document.addEventListener("click", (e) => {
+    const wrap = document.querySelector(".wallet-menu-wrap");
+    if (!wrap) return;
+    if (wrap.contains(e.target as Node)) return;
+    closeWalletMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    const menu = document.querySelector<HTMLElement>(".wallet-menu:not(.hidden)");
+    if (e.key === "Escape") {
+      if (menu) {
+        closeWalletMenu();
+        document.querySelector<HTMLButtonElement>(".wallet-btn")?.focus();
+      }
+      return;
+    }
+    if (!menu) return;
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const items = [...menu.querySelectorAll<HTMLButtonElement>(".wallet-menu-item")];
+    if (items.length === 0) return;
+    const i = items.indexOf(document.activeElement as HTMLButtonElement);
+    e.preventDefault();
+    const next = e.key === "ArrowDown" ? (i + 1) % items.length : (i - 1 + items.length) % items.length;
+    items[next]?.focus();
+  });
   $("#refresh-btn").onclick = () => void refreshLaunches();
   // Header search: filters the Missions table live; Enter opens the first match.
   const headerSearch = $("#header-search") as HTMLInputElement;

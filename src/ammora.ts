@@ -229,7 +229,7 @@ export function getScanClient(): PublicClient {
 
 export function getWalletClient(): WalletClient {
   const eth = (window as unknown as { ethereum?: unknown }).ethereum;
-  if (!eth) throw new Error("No injected wallet found (window.ethereum is missing). Install MetaMask or Rabby, or open this page in a wallet browser.");
+  if (!eth) throw new Error("No injected wallet found (window.ethereum is missing). Install a wallet extension, or open this page in a wallet browser.");
   return createWalletClient({ chain: giwaSepolia, transport: custom(eth as never) }) as WalletClient;
 }
 

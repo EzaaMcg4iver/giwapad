@@ -1,7 +1,7 @@
 /**
  * Error formatting for GiwaPad — pure functions, no DOM, no chain access.
  *
- * Why this module exists: EIP-1193 wallet providers (Rabby/MetaMask) throw
+ * Why this module exists: injected EIP-1193 wallet providers throw
  * PLAIN OBJECTS like `{ code: 4001, message: "User rejected the request." }`,
  * not Error instances. `String(err)` on such an object renders literally as
  * "[object Object]", which is what the user saw in the header after a failed
@@ -77,7 +77,7 @@ export function isRateLimitError(err: unknown): boolean {
 
 /**
  * True when an error means the wallet does not know the requested chain.
- * MetaMask uses code 4902; other wallets vary (e.g. -32603 with an
+ * Wallets use code 4902; some vary (e.g. -32603 with an
  * "Unrecognized chain ID" message), so the message is checked too.
  */
 export function isUnknownChainError(err: unknown): boolean {
@@ -94,11 +94,11 @@ export function friendlyErrorMessage(err: unknown): string {
   if (isRateLimitError(err)) return "RPC sedang sibuk, coba lagi.";
   const code = providerErrorCode(err);
   if (code === 4001) return "Permintaan ditolak di dompet, coba lagi.";
-  if (code === -32002) return "Permintaan masih menunggu di dompet — cek Rabby.";
+  if (code === -32002) return "Permintaan masih menunggu di dompet — cek dompetmu.";
   if (code === 4902 || isUnknownChainError(err)) return "Dompet belum mengenal jaringan GIWA Sepolia.";
   const raw = errorText(err);
   if (/no injected wallet|window\.ethereum/i.test(raw)) {
-    return "Dompet tidak ditemukan. Pasang MetaMask atau Rabby, atau buka halaman ini di browser dompet.";
+    return "Dompet tidak ditemukan. Pasang ekstensi dompet, atau buka halaman ini di browser dompet.";
   }
   if (/timed out|timeout/i.test(raw)) return "RPC lambat, coba lagi.";
   if (/wallet_switchEthereumChain|switch.*chain|pindah chain/i.test(raw)) {
