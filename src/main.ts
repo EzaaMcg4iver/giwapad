@@ -228,8 +228,10 @@ const state = {
   mineOnly: false,
   search: "",
   detailCurve: null as string | null,
+  /** Selected token for the standalone Swap page (curve address). */
+  swapCurve: null as string | null,
   slippageBps: 100,
-  view: "discover" as "discover" | "create" | "detail" | "profile",
+  view: "discover" as "discover" | "create" | "detail" | "profile" | "swap",
   // Cached non-zero token holdings, keyed by token address (lowercase).
   holdings: new Map<string, { balance: bigint; decimals: number; symbol: string }>(),
   holdingsFor: null as Address | null,
@@ -323,6 +325,7 @@ async function connectWallet(): Promise<void> {
     state.holdingsFor = null;
     await refreshBalances();
     renderWallet();
+    swapFormHandle?.refreshExecState();
     renderDiscover();
     if (state.view === "profile") void renderProfile();
     if (state.detailCurve) renderDetail(state.detailCurve);
@@ -352,6 +355,7 @@ function disconnectWallet(): void {
   state.holdings.clear();
   state.holdingsFor = null;
   renderWallet();
+  swapFormHandle?.refreshExecState();
   renderDiscover();
   if (state.view === "profile") void renderProfile();
 }
@@ -657,6 +661,9 @@ function renderTopCards(): void {
     poolRow.appendChild(el("span", "k", "Pool"));
     poolRow.appendChild(el("span", "v", l.curveData ? `${formatDisplayNumber(Number(formatUnits(l.curveData.state.quoteReserve, 18)))} ETH` : "…"));
     card.appendChild(poolRow);
+    const swapBtn = el("button", "btn swap-action", "Swap") as HTMLButtonElement;
+    swapBtn.onclick = (e) => { e.stopPropagation(); openSwap(l); };
+    card.appendChild(swapBtn);
     grid.appendChild(card);
   }
   box.appendChild(grid);
@@ -724,6 +731,9 @@ function renderMissionsTable(): void {
     const tradeBtn = el("button", "btn primary table-trade", "Trade") as HTMLButtonElement;
     tradeBtn.onclick = (e) => { e.stopPropagation(); openDetail(l); };
     tradeCell.appendChild(tradeBtn);
+    const swapBtn = el("button", "btn table-trade", "Swap") as HTMLButtonElement;
+    swapBtn.onclick = (e) => { e.stopPropagation(); openSwap(l); };
+    tradeCell.appendChild(swapBtn);
     tr.appendChild(tradeCell);
     tbody.appendChild(tr);
   }
@@ -975,6 +985,7 @@ async function enrichLaunches(): Promise<void> {
       l.loadError = friendlyErrorMessage(err);
     }
     renderDiscover();
+    refreshSwapLive();
     await new Promise((r) => setTimeout(r, 150));
   }
   void loadDayStats();
@@ -1040,6 +1051,7 @@ async function refreshLaunches(): Promise<void> {
     saveLaunchCache(state.launches, latest);
     state.scanStatus = `scanned to block ${latest.toString()}`;
     renderDiscover();
+    refreshSwapLive();
     void enrichLaunches();
   } catch (err) {
     state.scanStatus = "scan failed";
@@ -1385,6 +1397,275 @@ function chartPanel(l: EnrichedLaunch): HTMLElement {
 // Detail + trade
 // ---------------------------------------------------------------------------
 
+/** Shared swap-form options (curve + pool). */
+interface SwapFormOpts {
+  /** "You pay" prefix for the amount label (Swap page); default "Amount". */
+  payLabel?: string;
+  initialDirection?: "buy" | "sell";
+  /** Idle exec-button label; default "Get quote". */
+  idleExecLabel?: (dir: "buy" | "sell") => string;
+  /** "trade" (Expected out / Fee / Fill) or "swap" (You receive / min / price). Default "trade". */
+  quoteStyle?: "trade" | "swap";
+  /** Disable the exec button until a wallet is connected AND a valid quote exists (Swap page). */
+  disableUntilQuote?: boolean;
+  /** After a successful swap (result already shown in the modal). */
+  onExecuted?: () => Promise<void> | void;
+}
+
+interface SwapFormHandle {
+  element: HTMLElement;
+  setDirection(dir: "buy" | "sell"): void;
+  getDirection(): "buy" | "sell";
+  /** Re-evaluate the exec button's disabled state (wallet / quote). */
+  refreshExecState(): void;
+}
+
+/**
+ * Curve buy/sell form (the Trade panel's status-1 body), shared by the
+ * detail Trade panel and the standalone Swap page. Quote via quoteCurve,
+ * plan via planCurveSwap, execution behind the shared review modal.
+ * The form itself never sends a transaction without a modal review.
+ */
+function curveSwapForm(l: EnrichedLaunch, opts: SwapFormOpts): SwapFormHandle {
+  const form = el("div", "swap-form");
+  const quoteSymbol = "WETH";
+  const baseSymbol = l.meta!.symbol;
+  const idleLabel = (dir: "buy" | "sell"): string => opts.idleExecLabel?.(dir) ?? "Get quote";
+  const payLabel = (dir: "buy" | "sell"): string =>
+    opts.payLabel
+      ? `${opts.payLabel} (${dir === "buy" ? quoteSymbol : baseSymbol})`
+      : `Amount (${dir === "buy" ? quoteSymbol : baseSymbol})`;
+  let direction: "buy" | "sell" = opts.initialDirection ?? "buy";
+  // Token balance (sell side) loads lazily; WETH balance is cached in state.
+  let tokenBalance: bigint | null = null;
+  let lastPlan: Awaited<ReturnType<typeof planCurveSwap>> | null = null;
+  let lastAmountIn = 0n;
+  let hasQuote = false;
+
+  const dirRow = el("div", "seg");
+  const buyBtn = el("button", "btn seg-btn active", "Buy") as HTMLButtonElement;
+  const sellBtn = el("button", "btn seg-btn", "Sell") as HTMLButtonElement;
+  dirRow.append(buyBtn, sellBtn);
+  form.appendChild(dirRow);
+  const amountLabel = el("label", "", payLabel(direction));
+  const amountInput = el("input") as HTMLInputElement;
+  amountInput.type = "text";
+  amountInput.inputMode = "decimal";
+  amountInput.placeholder = "0.0";
+  const balRow = el("div", "balance-row");
+  balRow.appendChild(el("span", "muted", "Balance"));
+  const balVal = el("span", "balance-val", "…");
+  balRow.appendChild(balVal);
+  const maxBtn = el("button", "btn text", "MAX") as HTMLButtonElement;
+  maxBtn.onclick = () => {
+    const bal = direction === "buy" ? state.wethBalance : tokenBalance;
+    if (bal === null) return;
+    amountInput.value = formatUnits(bal, direction === "buy" ? 18 : l.meta!.decimals);
+    void updateQuote();
+  };
+  balRow.appendChild(maxBtn);
+  // Slippage is real: it feeds planCurveSwap (minimumAmountOut) and the
+  // pool min-out. The input is in %; state keeps basis points (1% = 100 bps).
+  const slipLabel = el("label", "", "Slippage (%)");
+  const slipInput = el("input") as HTMLInputElement;
+  slipInput.type = "number";
+  slipInput.value = String(state.slippageBps / 100);
+  slipInput.min = "0.1";
+  slipInput.max = "50";
+  slipInput.step = "0.1";
+  slipInput.onchange = () => {
+    const pct = Number(slipInput.value) || 1;
+    state.slippageBps = Math.max(10, Math.min(5000, Math.round(pct * 100)));
+    slipInput.value = String(state.slippageBps / 100);
+    void updateQuote();
+  };
+  const quoteBox = el("div", "quote-box muted", "Enter an amount to see a live quote.");
+  const execBtn = el("button", "btn primary", idleLabel(direction)) as HTMLButtonElement;
+  if (opts.disableUntilQuote) execBtn.disabled = true;
+  const resultBox = el("div", "result");
+
+  function refreshExecState(): void {
+    if (!opts.disableUntilQuote) return;
+    execBtn.disabled = !state.account || !hasQuote;
+  }
+
+  function resetExec(): void {
+    execBtn.disabled = false;
+    execBtn.textContent = idleLabel(direction);
+    refreshExecState();
+  }
+
+  async function refreshBalRow(): Promise<void> {
+    try {
+      if (direction === "buy") {
+        balVal.textContent = `${fmtAmount(state.wethBalance, 18)} WETH`;
+      } else {
+        if (!state.account) { balVal.textContent = "Connect a wallet to see your balance."; return; }
+        if (tokenBalance === null) tokenBalance = await getTokenBalance(l.token, state.account);
+        balVal.textContent = `${fmtAmount(tokenBalance, l.meta!.decimals)} ${l.meta!.symbol}`;
+      }
+    } catch { balVal.textContent = "Could not load balance."; }
+  }
+
+  function setDirection(dir: "buy" | "sell"): void {
+    direction = dir;
+    buyBtn.classList.toggle("active", dir === "buy");
+    sellBtn.classList.toggle("active", dir === "sell");
+    amountLabel.textContent = payLabel(dir);
+    lastPlan = null;
+    execBtn.textContent = idleLabel(dir);
+    void refreshBalRow();
+    void updateQuote();
+  }
+  buyBtn.onclick = () => setDirection("buy");
+  sellBtn.onclick = () => setDirection("sell");
+  if (direction === "sell") {
+    buyBtn.classList.remove("active");
+    sellBtn.classList.add("active");
+    amountLabel.textContent = payLabel("sell");
+  }
+  void refreshBalRow();
+
+  async function updateQuote(): Promise<void> {
+    lastPlan = null;
+    hasQuote = false;
+    execBtn.textContent = idleLabel(direction);
+    const raw = amountInput.value.trim();
+    if (!raw || Number(raw) <= 0) {
+      quoteBox.textContent = "Enter an amount to see a live quote.";
+      refreshExecState();
+      return;
+    }
+    try {
+      const decimals = direction === "buy" ? 18 : l.meta!.decimals;
+      const amountIn = parseUnits(raw, decimals);
+      lastAmountIn = amountIn;
+      const q = await quoteCurve(l.curve!, amountIn, direction === "sell");
+      const outDec = direction === "buy" ? l.meta!.decimals : 18;
+      const outSym = direction === "buy" ? baseSymbol : quoteSymbol;
+      const inSym = direction === "buy" ? quoteSymbol : baseSymbol;
+      if (opts.quoteStyle === "swap") {
+        const min = minOut(q.amountOut, state.slippageBps);
+        // Per-token price: scale both raw amounts to whole tokens first —
+        // a raw division is off by 10^(inDec - outDec) whenever the
+        // decimals differ (e.g. WETH 18 vs a 9-decimal token: 1e9x wrong).
+        const unit = (Number(q.amountOut) / 10 ** outDec) / (Number(amountIn) / 10 ** decimals);
+        quoteBox.innerHTML = "";
+        quoteBox.appendChild(el("div", "", `You receive ≈ ${fmtAmount(q.amountOut, outDec)} ${outSym}`));
+        quoteBox.appendChild(el("div", "", `Minimum received (${(state.slippageBps / 100).toFixed(1)}% slippage): ${fmtAmount(min, outDec)} ${outSym}`));
+        if (q.fee > 0n) quoteBox.appendChild(el("div", "", `Fee: ${fmtAmount(q.fee, decimals)} ${inSym}`));
+        quoteBox.appendChild(el("div", "", `Price: 1 ${inSym} ≈ ${formatDisplayNumber(unit)} ${outSym}`));
+      } else {
+        quoteBox.innerHTML = "";
+        quoteBox.appendChild(el("div", "", `Expected out: ${fmtAmount(q.amountOut, outDec)} ${outSym}`));
+        quoteBox.appendChild(el("div", "", `Fee: ${fmtAmount(q.fee, direction === "buy" ? 18 : l.meta!.decimals)} ${direction === "buy" ? quoteSymbol : baseSymbol}`));
+        quoteBox.appendChild(el("div", "", `Fill: ${esc(q.fillKind)}${q.amountLeft > 0n ? ` · unfilled ${fmtAmount(q.amountLeft, decimals)}` : ""}`));
+      }
+      hasQuote = true;
+      execBtn.textContent = "Preview & execute";
+    } catch (err) {
+      quoteBox.textContent = `Quote failed: ${friendlyErrorMessage(err)}`;
+    }
+    refreshExecState();
+  }
+  amountInput.oninput = () => void updateQuote();
+
+  execBtn.onclick = async () => {
+    resultBox.innerHTML = "";
+    if (!state.account) { resultBox.appendChild(el("div", "error", "Connect a wallet first.")); return; }
+    try {
+      if (lastAmountIn === 0n) { resultBox.appendChild(el("div", "error", "Enter an amount and wait for the quote first.")); return; }
+      execBtn.disabled = true;
+      execBtn.textContent = "Building plan…";
+      const isBuy = direction === "buy";
+      const needed = lastAmountIn;
+      const bal = isBuy ? state.wethBalance : await getTokenBalance(l.token, state.account);
+      if (bal < needed) {
+        if (isBuy) {
+          resultBox.innerHTML = "";
+          const short = needed - bal;
+          resultBox.appendChild(el("div", "warn", `Your WETH balance (${fmtAmount(bal, 18)}) is short by ${fmtAmount(short, 18)} WETH. Wrap ETH first:`));
+          const wrapBtn = el("button", "btn", `Wrap ${fmtAmount(short, 18)} ETH → WETH`) as HTMLButtonElement;
+          wrapBtn.onclick = async () => {
+            try {
+              wrapBtn.disabled = true;
+              const hash = await sendTx(buildWrapTx(short));
+              resultBox.appendChild(el("div", "muted", `Wrap tx sent: ${shortAddr(hash)} — waiting for confirmation…`));
+              await waitReceipt(hash);
+              await refreshBalances();
+              renderWallet();
+              resultBox.appendChild(el("div", "ok", "Wrapped. You can now get a fresh quote."));
+            } catch (err) { showError(resultBox, err); }
+          };
+          resultBox.appendChild(wrapBtn);
+        } else {
+          resultBox.appendChild(el("div", "error", `Your ${baseSymbol} balance (${fmtAmount(bal, l.meta!.decimals)}) is less than the sell amount.`));
+        }
+        resetExec();
+        return;
+      }
+      const plan = await planCurveSwap(l.curve!, lastAmountIn, direction === "sell", state.slippageBps, state.account);
+      lastPlan = plan;
+      const outDec = direction === "buy" ? l.meta!.decimals : 18;
+      const outSym = direction === "buy" ? baseSymbol : quoteSymbol;
+      const inSym = direction === "buy" ? quoteSymbol : baseSymbol;
+      const inDec = direction === "buy" ? 18 : l.meta!.decimals;
+      const m = openReviewModal({
+        signLabel: "Sign & execute in wallet",
+        onClose: () => {
+          lastPlan = null;
+          resetExec();
+        },
+      });
+      m.body.appendChild(reviewRow("You pay", `${fmtAmount(lastAmountIn, inDec)} ${inSym}`));
+      m.body.appendChild(reviewRow("You receive (min)", `${fmtAmount(plan.quote.minimumAmountOut, outDec)} ${outSym}`));
+      m.body.appendChild(reviewRow("Fee", `${fmtAmount(plan.quote.fee, inDec)} ${inSym}`));
+      m.body.appendChild(reviewRow("Fill", plan.quote.fillKind));
+      m.body.appendChild(reviewRow("To (curve)", reviewAddrValue(l.curve!)));
+      if (plan.approvals.length > 0) {
+        m.body.appendChild(reviewRow("Approvals needed", plan.approvals.map((a) => `${shortAddr(a.token)} → ${shortAddr(a.spender)} (${fmtAmount(a.amount, inDec)})`).join(", ")));
+      }
+      resetExec();
+      m.signBtn.onclick = async () => {
+        try {
+          reviewBeginSign();
+          const p = lastPlan!;
+          for (const ap of p.approvals) {
+            const allowance = await getAllowance(ap.token, state.account!, ap.spender);
+            if (allowance < ap.amount) {
+              m.statusBox.appendChild(el("div", "muted", `Approving ${shortAddr(ap.token)} for ${shortAddr(ap.spender)}…`));
+              const ah = await sendTx(buildApproveTx(ap.token, ap.spender, ap.amount));
+              await waitReceipt(ah);
+            }
+          }
+          m.statusBox.appendChild(el("div", "muted", "Sending swap — confirm in your wallet…"));
+          const hash = await sendTx(p.transaction);
+          m.statusBox.appendChild(el("div", "muted", `Tx sent: ${shortAddr(hash)} — waiting for confirmation…`));
+          const parsed = await waitForSwapReceipt(hash, l.curve!, state.account!, state.account!, direction === "sell", lastAmountIn, p.quote.minimumAmountOut);
+          m.statusBox.appendChild(el("div", "ok", `Swap confirmed. Received ${fmtAmount(parsed.amountOut, outDec)} ${outSym}. Consumed ${fmtAmount(parsed.consumedAmountIn, inDec)}.`));
+          lastPlan = null;
+          reviewFinish();
+          await opts.onExecuted?.();
+        } catch (err) {
+          reviewResetSign("Sign & execute in wallet");
+          showError(m.statusBox, err);
+        }
+      };
+    } catch (err) {
+      showError(resultBox, err);
+      resetExec();
+    }
+  };
+
+  form.append(amountLabel, amountInput, balRow, slipLabel, slipInput, quoteBox, execBtn, resultBox);
+  return {
+    element: form,
+    setDirection,
+    getDirection: () => direction,
+    refreshExecState,
+  };
+}
+
 function tradePanel(l: EnrichedLaunch): HTMLElement {
   const wrap = el("div", "panel");
   wrap.appendChild(el("h3", "", "Trade"));
@@ -1393,175 +1674,10 @@ function tradePanel(l: EnrichedLaunch): HTMLElement {
     return wrap;
   }
   const status = l.curveData.state.status;
-  const quoteSymbol = "WETH";
-  const baseSymbol = l.meta.symbol;
 
   if (status === 1) {
-    const dirRow = el("div", "seg");
-    const buyBtn = el("button", "btn seg-btn active", "Buy") as HTMLButtonElement;
-    const sellBtn = el("button", "btn seg-btn", "Sell") as HTMLButtonElement;
-    dirRow.append(buyBtn, sellBtn);
-    wrap.appendChild(dirRow);
-    let direction: "buy" | "sell" = "buy";
-    // Token balance (sell side) loads lazily; WETH balance is cached in state.
-    let tokenBalance: bigint | null = null;
-    const amountLabel = el("label", "", `Amount (${quoteSymbol})`);
-    const amountInput = el("input") as HTMLInputElement;
-    amountInput.type = "text";
-    amountInput.inputMode = "decimal";
-    amountInput.placeholder = "0.0";
-    const balRow = el("div", "balance-row");
-    balRow.appendChild(el("span", "muted", "Balance"));
-    const balVal = el("span", "balance-val", "…");
-    balRow.appendChild(balVal);
-    const maxBtn = el("button", "btn text", "MAX") as HTMLButtonElement;
-    maxBtn.onclick = () => {
-      const bal = direction === "buy" ? state.wethBalance : tokenBalance;
-      if (bal === null) return;
-      amountInput.value = formatUnits(bal, direction === "buy" ? 18 : l.meta!.decimals);
-      void updateQuote();
-    };
-    balRow.appendChild(maxBtn);
-    async function refreshBalRow(): Promise<void> {
-      try {
-        if (direction === "buy") {
-          balVal.textContent = `${fmtAmount(state.wethBalance, 18)} WETH`;
-        } else {
-          if (!state.account) { balVal.textContent = "Connect a wallet to see your balance."; return; }
-          if (tokenBalance === null) tokenBalance = await getTokenBalance(l.token, state.account);
-          balVal.textContent = `${fmtAmount(tokenBalance, l.meta!.decimals)} ${l.meta!.symbol}`;
-        }
-      } catch { balVal.textContent = "Could not load balance."; }
-    }
-    buyBtn.onclick = () => { direction = "buy"; buyBtn.classList.add("active"); sellBtn.classList.remove("active"); amountLabel.textContent = `Amount (${quoteSymbol})`; void refreshBalRow(); updateQuote(); };
-    sellBtn.onclick = () => { direction = "sell"; sellBtn.classList.add("active"); buyBtn.classList.remove("active"); amountLabel.textContent = `Amount (${baseSymbol})`; void refreshBalRow(); updateQuote(); };
-    void refreshBalRow();
-
-    // Slippage is real: it feeds planCurveSwap (minimumAmountOut) and the
-    // pool min-out. The input is in %; state keeps basis points (1% = 100 bps).
-    const slipLabel = el("label", "", "Slippage (%)");
-    const slipInput = el("input") as HTMLInputElement;
-    slipInput.type = "number";
-    slipInput.value = String(state.slippageBps / 100);
-    slipInput.min = "0.1";
-    slipInput.max = "50";
-    slipInput.step = "0.1";
-    slipInput.onchange = () => {
-      const pct = Number(slipInput.value) || 1;
-      state.slippageBps = Math.max(10, Math.min(5000, Math.round(pct * 100)));
-      slipInput.value = String(state.slippageBps / 100);
-      updateQuote();
-    };
-
-    const quoteBox = el("div", "quote-box muted", "Enter an amount to see a live quote.");
-    const execBtn = el("button", "btn primary", "Get quote") as HTMLButtonElement;
-    const resultBox = el("div", "result");
-
-    let lastPlan: Awaited<ReturnType<typeof planCurveSwap>> | null = null;
-    let lastAmountIn = 0n;
-
-    async function updateQuote(): Promise<void> {
-      lastPlan = null;
-      execBtn.textContent = "Get quote";
-      const raw = amountInput.value.trim();
-      if (!raw || Number(raw) <= 0) {
-        quoteBox.textContent = "Enter an amount to see a live quote.";
-        return;
-      }
-      try {
-        const decimals = direction === "buy" ? 18 : l.meta!.decimals;
-        const amountIn = parseUnits(raw, decimals);
-        lastAmountIn = amountIn;
-        const q = await quoteCurve(l.curve!, amountIn, direction === "sell");
-        const outDec = direction === "buy" ? l.meta!.decimals : 18;
-        const outSym = direction === "buy" ? baseSymbol : quoteSymbol;
-        quoteBox.innerHTML = "";
-        quoteBox.appendChild(el("div", "", `Expected out: ${fmtAmount(q.amountOut, outDec)} ${outSym}`));
-        quoteBox.appendChild(el("div", "", `Fee: ${fmtAmount(q.fee, direction === "buy" ? 18 : l.meta!.decimals)} ${direction === "buy" ? quoteSymbol : baseSymbol}`));
-        quoteBox.appendChild(el("div", "", `Fill: ${esc(q.fillKind)}${q.amountLeft > 0n ? ` · unfilled ${fmtAmount(q.amountLeft, decimals)}` : ""}`));
-        execBtn.textContent = "Preview & execute";
-      } catch (err) {
-        quoteBox.textContent = `Quote failed: ${friendlyErrorMessage(err)}`;
-      }
-    }
-    amountInput.oninput = () => void updateQuote();
-
-    execBtn.onclick = async () => {
-      resultBox.innerHTML = "";
-      if (!state.account) { resultBox.appendChild(el("div", "error", "Connect a wallet first.")); return; }
-      try {
-        if (!lastPlan) {
-          if (lastAmountIn === 0n) { resultBox.appendChild(el("div", "error", "Enter an amount and wait for the quote first.")); return; }
-          execBtn.disabled = true;
-          execBtn.textContent = "Building plan…";
-          const isBuy = direction === "buy";
-          const inToken = isBuy ? WETH : l.token;
-          const needed = lastAmountIn;
-          const bal = isBuy ? state.wethBalance : await getTokenBalance(l.token, state.account);
-          if (bal < needed) {
-            if (isBuy) {
-              resultBox.innerHTML = "";
-              const short = needed - bal;
-              resultBox.appendChild(el("div", "warn", `Your WETH balance (${fmtAmount(bal, 18)}) is short by ${fmtAmount(short, 18)} WETH. Wrap ETH first:`));
-              const wrapBtn = el("button", "btn", `Wrap ${fmtAmount(short, 18)} ETH → WETH`) as HTMLButtonElement;
-              wrapBtn.onclick = async () => {
-                try {
-                  wrapBtn.disabled = true;
-                  const hash = await sendTx(buildWrapTx(short));
-                  resultBox.appendChild(el("div", "muted", `Wrap tx sent: ${shortAddr(hash)} — waiting for confirmation…`));
-                  await waitReceipt(hash);
-                  await refreshBalances();
-                  renderWallet();
-                  resultBox.appendChild(el("div", "ok", "Wrapped. You can now get a fresh quote."));
-                } catch (err) { showError(resultBox, err); }
-              };
-              resultBox.appendChild(wrapBtn);
-            } else {
-              resultBox.appendChild(el("div", "error", `Your ${baseSymbol} balance (${fmtAmount(bal, l.meta!.decimals)}) is less than the sell amount.`));
-            }
-            return;
-          }
-          lastPlan = await planCurveSwap(l.curve!, lastAmountIn, direction === "sell", state.slippageBps, state.account);
-          const p = lastPlan;
-          const outDec = direction === "buy" ? l.meta!.decimals : 18;
-          const outSym = direction === "buy" ? baseSymbol : quoteSymbol;
-          const prev = el("div", "preview");
-          prev.appendChild(el("div", "", "Review before signing in your wallet:"));
-          prev.appendChild(el("div", "", `You pay: ${fmtAmount(lastAmountIn, direction === "buy" ? 18 : l.meta!.decimals)} ${direction === "buy" ? quoteSymbol : baseSymbol}`));
-          prev.appendChild(el("div", "", `You receive (min): ${fmtAmount(p.quote.minimumAmountOut, outDec)} ${outSym}`));
-          prev.appendChild(el("div", "", `Fee: ${fmtAmount(p.quote.fee, direction === "buy" ? 18 : l.meta!.decimals)}`));
-          prev.appendChild(el("div", "", `Fill: ${esc(p.quote.fillKind)}`));
-          prev.appendChild(el("div", "", `To (curve): ${shortAddr(l.curve!)}`));
-          if (p.approvals.length > 0) {
-            prev.appendChild(el("div", "", `Approvals needed: ${p.approvals.map((a) => `${shortAddr(a.token)} → ${shortAddr(a.spender)} (${fmtAmount(a.amount, direction === "buy" ? 18 : l.meta!.decimals)})`).join(", ")}`));
-          }
-          resultBox.appendChild(prev);
-          execBtn.textContent = "Sign & execute in wallet";
-          execBtn.disabled = false;
-          return;
-        }
-        // Execute the prepared plan.
-        execBtn.disabled = true;
-        execBtn.textContent = "Executing…";
-        const p = lastPlan;
-        for (const ap of p.approvals) {
-          const allowance = await getAllowance(ap.token, state.account, ap.spender);
-          if (allowance < ap.amount) {
-            resultBox.appendChild(el("div", "muted", `Approving ${shortAddr(ap.token)} for ${shortAddr(ap.spender)}…`));
-            const ah = await sendTx(buildApproveTx(ap.token, ap.spender, ap.amount));
-            await waitReceipt(ah);
-          }
-        }
-        resultBox.appendChild(el("div", "muted", "Sending swap — confirm in your wallet…"));
-        const hash = await sendTx(p.transaction);
-        resultBox.appendChild(el("div", "muted", `Tx sent: ${shortAddr(hash)} — waiting for confirmation…`));
-        const parsed = await waitForSwapReceipt(hash, l.curve!, state.account, state.account, direction === "sell", lastAmountIn, p.quote.minimumAmountOut);
-        const outDec = direction === "buy" ? l.meta!.decimals : 18;
-        const outSym = direction === "buy" ? baseSymbol : quoteSymbol;
-        resultBox.appendChild(el("div", "ok", `Swap confirmed. Received ${fmtAmount(parsed.amountOut, outDec)} ${outSym}. Consumed ${fmtAmount(parsed.consumedAmountIn, direction === "buy" ? 18 : l.meta!.decimals)}.`));
-        lastPlan = null;
-        execBtn.textContent = "Get quote";
-        execBtn.disabled = false;
+    wrap.appendChild(curveSwapForm(l, {
+      onExecuted: async () => {
         await refreshBalances();
         renderWallet();
         const fresh = await getCurveFull(l.curve);
@@ -1569,19 +1685,13 @@ function tradePanel(l: EnrichedLaunch): HTMLElement {
         l.price = priceFromSqrtPrice(fresh.state.sqrtPrice, l.meta!.decimals, 18);
         renderDiscover();
         // The trade moved the price: drop the cached chart and rebuild just
-        // the chart panel, so it shows the new point — without wiping the
-        // "Swap confirmed" message and the trade form above.
+        // the chart panel, so it shows the new point — the "Swap confirmed"
+        // message lives in the modal, not on the page.
         chartCache.delete(l.curve.toLowerCase());
         const oldChart = document.querySelector(".chart-panel");
         if (oldChart) oldChart.replaceWith(chartPanel(l));
-      } catch (err) {
-        showError(resultBox, err);
-        execBtn.disabled = false;
-        execBtn.textContent = "Get quote";
-      }
-    };
-
-    wrap.append(amountLabel, amountInput, balRow, slipLabel, slipInput, quoteBox, execBtn, resultBox);
+      },
+    }).element);
   } else if (status === 2) {
     wrap.appendChild(el("div", "warn", "This curve is ready to graduate. Graduation migrates liquidity to the pool and is permissionless."));
     const gBtn = el("button", "btn primary", "Graduate (migrate to pool)") as HTMLButtonElement;
@@ -1618,16 +1728,35 @@ function tradePanel(l: EnrichedLaunch): HTMLElement {
   return wrap;
 }
 
-function poolTradePanel(l: EnrichedLaunch, pool: Address): HTMLElement {
-  const wrap = el("div", "panel");
-  wrap.appendChild(el("h4", "", "Pool trading"));
+
+/**
+ * Pool buy/sell form for graduated tokens, shared by the detail Pool
+ * trading panel and the standalone Swap page. Buy goes through the native
+ * router (ETH in); sell plans via planPoolSwap (approvals first). Both
+ * behind the shared review modal.
+ */
+function poolSwapForm(l: EnrichedLaunch, pool: Address, opts: SwapFormOpts): SwapFormHandle {
+  const form = el("div", "swap-form");
+  const baseSymbol = l.meta!.symbol;
+  const idleLabel = (dir: "buy" | "sell"): string => opts.idleExecLabel?.(dir) ?? "Get quote";
+  const payLabel = (dir: "buy" | "sell"): string =>
+    opts.payLabel
+      ? `${opts.payLabel} (${dir === "buy" ? "ETH" : baseSymbol})`
+      : dir === "buy" ? "Buy amount (ETH)" : `Sell amount (${baseSymbol})`;
+  let direction: "buy" | "sell" = opts.initialDirection ?? "buy";
+  let poolTokenBalance: bigint | null = null;
+  let lastAmountIn = 0n;
+  let lastMinOut = 0n;
+  let lastPlan: Awaited<ReturnType<typeof planPoolSwap>> | null = null;
+  let lastOutMeta: { symbol: string; decimals: number } | null = null;
+  let hasQuote = false;
+
   const dirRow = el("div", "seg");
   const buyBtn = el("button", "btn seg-btn active", "Buy with ETH") as HTMLButtonElement;
   const sellBtn = el("button", "btn seg-btn", "Sell for WETH") as HTMLButtonElement;
   dirRow.append(buyBtn, sellBtn);
-  wrap.appendChild(dirRow);
-  let direction: "buy" | "sell" = "buy";
-  const amountLabel = el("label", "", "Buy amount (ETH)");
+  form.appendChild(dirRow);
+  const amountLabel = el("label", "", payLabel(direction));
   const amountInput = el("input") as HTMLInputElement;
   amountInput.type = "text";
   amountInput.inputMode = "decimal";
@@ -1636,7 +1765,6 @@ function poolTradePanel(l: EnrichedLaunch, pool: Address): HTMLElement {
   balRow.appendChild(el("span", "muted", "Balance"));
   const balVal = el("span", "balance-val", "…");
   balRow.appendChild(balVal);
-  let poolTokenBalance: bigint | null = null;
   const maxBtn = el("button", "btn text", "MAX") as HTMLButtonElement;
   maxBtn.onclick = () => {
     const bal = direction === "buy" ? state.ethBalance : poolTokenBalance;
@@ -1645,18 +1773,6 @@ function poolTradePanel(l: EnrichedLaunch, pool: Address): HTMLElement {
     void updateQuote();
   };
   balRow.appendChild(maxBtn);
-  async function refreshPoolBalRow(): Promise<void> {
-    try {
-      if (direction === "buy") {
-        balVal.textContent = `${fmtAmount(state.ethBalance, 18)} ETH`;
-      } else {
-        if (!state.account) { balVal.textContent = "Connect a wallet to see your balance."; return; }
-        if (poolTokenBalance === null) poolTokenBalance = await getTokenBalance(l.token, state.account);
-        balVal.textContent = `${fmtAmount(poolTokenBalance, l.meta!.decimals)} ${l.meta!.symbol}`;
-      }
-    } catch { balVal.textContent = "Could not load balance."; }
-  }
-  void refreshPoolBalRow();
   // Slippage is real here too: it feeds the pool minimum-out (minOut).
   const slipLabel = el("label", "", "Slippage (%)");
   const slipInput = el("input") as HTMLInputElement;
@@ -1669,44 +1785,65 @@ function poolTradePanel(l: EnrichedLaunch, pool: Address): HTMLElement {
     const pct = Number(slipInput.value) || 1;
     state.slippageBps = Math.max(10, Math.min(5000, Math.round(pct * 100)));
     slipInput.value = String(state.slippageBps / 100);
-    updateQuote();
+    void updateQuote();
   };
   const quoteBox = el("div", "quote-box muted", "Enter an ETH amount to see a live pool quote.");
-  const execBtn = el("button", "btn primary", "Get quote") as HTMLButtonElement;
+  const execBtn = el("button", "btn primary", idleLabel(direction)) as HTMLButtonElement;
+  if (opts.disableUntilQuote) execBtn.disabled = true;
   const resultBox = el("div", "result");
-  let lastAmountIn = 0n;
-  let lastMinOut = 0n;
-  let lastPlan: Awaited<ReturnType<typeof planPoolSwap>> | null = null;
 
-  buyBtn.onclick = () => {
-    direction = "buy";
-    buyBtn.classList.add("active");
-    sellBtn.classList.remove("active");
-    amountLabel.textContent = "Buy amount (ETH)";
+  function refreshExecState(): void {
+    if (!opts.disableUntilQuote) return;
+    execBtn.disabled = !state.account || !hasQuote;
+  }
+
+  function resetExec(): void {
+    execBtn.disabled = false;
+    execBtn.textContent = idleLabel(direction);
+    refreshExecState();
+  }
+
+  async function refreshPoolBalRow(): Promise<void> {
+    try {
+      if (direction === "buy") {
+        balVal.textContent = `${fmtAmount(state.ethBalance, 18)} ETH`;
+      } else {
+        if (!state.account) { balVal.textContent = "Connect a wallet to see your balance."; return; }
+        if (poolTokenBalance === null) poolTokenBalance = await getTokenBalance(l.token, state.account);
+        balVal.textContent = `${fmtAmount(poolTokenBalance, l.meta!.decimals)} ${l.meta!.symbol}`;
+      }
+    } catch { balVal.textContent = "Could not load balance."; }
+  }
+
+  function setDirection(dir: "buy" | "sell"): void {
+    direction = dir;
+    buyBtn.classList.toggle("active", dir === "buy");
+    sellBtn.classList.toggle("active", dir === "sell");
+    amountLabel.textContent = payLabel(dir);
     lastPlan = null;
-    execBtn.textContent = "Get quote";
+    execBtn.textContent = idleLabel(dir);
     void refreshPoolBalRow();
     void updateQuote();
-  };
-  sellBtn.onclick = () => {
-    direction = "sell";
-    sellBtn.classList.add("active");
+  }
+  buyBtn.onclick = () => setDirection("buy");
+  sellBtn.onclick = () => setDirection("sell");
+  if (direction === "sell") {
     buyBtn.classList.remove("active");
-    amountLabel.textContent = `Sell amount (${l.meta!.symbol})`;
-    lastPlan = null;
-    execBtn.textContent = "Get quote";
-    void refreshPoolBalRow();
-    void updateQuote();
-  };
+    sellBtn.classList.add("active");
+    amountLabel.textContent = payLabel("sell");
+  }
+  void refreshPoolBalRow();
 
   async function updateQuote(): Promise<void> {
     lastPlan = null;
-    execBtn.textContent = "Get quote";
+    hasQuote = false;
+    execBtn.textContent = idleLabel(direction);
     const raw = amountInput.value.trim();
     if (!raw || Number(raw) <= 0) {
       quoteBox.textContent = direction === "buy"
         ? "Enter an ETH amount to see a live pool quote."
         : "Enter a token amount to see a live pool quote.";
+      refreshExecState();
       return;
     }
     try {
@@ -1717,25 +1854,48 @@ function poolTradePanel(l: EnrichedLaunch, pool: Address): HTMLElement {
         const baseIsWeth = st.baseToken.toLowerCase() === WETH.toLowerCase();
         const outToken = baseIsWeth ? st.quoteToken : st.baseToken;
         const outMeta = await getTokenMeta(outToken);
+        lastOutMeta = outMeta;
         const q = await quotePool(pool, WETH, amountIn);
         lastMinOut = minOut(q.amountOut, state.slippageBps);
-        quoteBox.innerHTML = "";
-        quoteBox.appendChild(el("div", "", `Expected out: ${fmtAmount(q.amountOut, outMeta.decimals)} ${outMeta.symbol}`));
-        quoteBox.appendChild(el("div", "", `Minimum out (${(state.slippageBps / 100).toFixed(1)}% slippage): ${fmtAmount(lastMinOut, outMeta.decimals)} ${outMeta.symbol}`));
+        if (opts.quoteStyle === "swap") {
+          // Per-token price: scale both raw amounts to whole tokens first.
+          const unit = (Number(q.amountOut) / 10 ** outMeta.decimals) / (Number(amountIn) / 10 ** 18);
+          quoteBox.innerHTML = "";
+          quoteBox.appendChild(el("div", "", `You receive ≈ ${fmtAmount(q.amountOut, outMeta.decimals)} ${outMeta.symbol}`));
+          quoteBox.appendChild(el("div", "", `Minimum received (${(state.slippageBps / 100).toFixed(1)}% slippage): ${fmtAmount(lastMinOut, outMeta.decimals)} ${outMeta.symbol}`));
+          quoteBox.appendChild(el("div", "", `Price: 1 ETH ≈ ${formatDisplayNumber(unit)} ${outMeta.symbol}`));
+        } else {
+          quoteBox.innerHTML = "";
+          quoteBox.appendChild(el("div", "", `Expected out: ${fmtAmount(q.amountOut, outMeta.decimals)} ${outMeta.symbol}`));
+          quoteBox.appendChild(el("div", "", `Minimum out (${(state.slippageBps / 100).toFixed(1)}% slippage): ${fmtAmount(lastMinOut, outMeta.decimals)} ${outMeta.symbol}`));
+        }
+        hasQuote = true;
         execBtn.textContent = "Preview & execute";
       } else {
         const amountIn = parseUnits(raw, l.meta!.decimals);
         lastAmountIn = amountIn;
         const q = await quotePool(pool, l.token, amountIn);
         lastMinOut = minOut(q.amountOut, state.slippageBps);
-        quoteBox.innerHTML = "";
-        quoteBox.appendChild(el("div", "", `Expected out: ${fmtAmount(q.amountOut, 18)} WETH`));
-        quoteBox.appendChild(el("div", "", `Minimum out (${(state.slippageBps / 100).toFixed(1)}% slippage): ${fmtAmount(lastMinOut, 18)} WETH`));
+        lastOutMeta = { symbol: "WETH", decimals: 18 };
+        if (opts.quoteStyle === "swap") {
+          // Per-token price: scale both raw amounts to whole tokens first.
+          const unit = (Number(q.amountOut) / 10 ** 18) / (Number(amountIn) / 10 ** l.meta!.decimals);
+          quoteBox.innerHTML = "";
+          quoteBox.appendChild(el("div", "", `You receive ≈ ${fmtAmount(q.amountOut, 18)} WETH`));
+          quoteBox.appendChild(el("div", "", `Minimum received (${(state.slippageBps / 100).toFixed(1)}% slippage): ${fmtAmount(lastMinOut, 18)} WETH`));
+          quoteBox.appendChild(el("div", "", `Price: 1 ${baseSymbol} ≈ ${formatDisplayNumber(unit)} WETH`));
+        } else {
+          quoteBox.innerHTML = "";
+          quoteBox.appendChild(el("div", "", `Expected out: ${fmtAmount(q.amountOut, 18)} WETH`));
+          quoteBox.appendChild(el("div", "", `Minimum out (${(state.slippageBps / 100).toFixed(1)}% slippage): ${fmtAmount(lastMinOut, 18)} WETH`));
+        }
+        hasQuote = true;
         execBtn.textContent = "Preview & execute";
       }
     } catch (err) {
       quoteBox.textContent = `Quote failed: ${friendlyErrorMessage(err)}`;
     }
+    refreshExecState();
   }
   amountInput.oninput = () => void updateQuote();
 
@@ -1745,71 +1905,358 @@ function poolTradePanel(l: EnrichedLaunch, pool: Address): HTMLElement {
     if (lastAmountIn === 0n) { resultBox.appendChild(el("div", "error", "Enter an amount and wait for the quote first.")); return; }
     try {
       if (direction === "buy") {
-        execBtn.disabled = true;
-        execBtn.textContent = "Executing…";
-        const tx = buildNativePoolBuy(pool, lastAmountIn, lastMinOut, state.account);
-        resultBox.appendChild(el("div", "muted", `Buying with ${fmtAmount(lastAmountIn, 18)} ETH via the native router — confirm in your wallet…`));
-        const hash = await sendTx(tx);
-        resultBox.appendChild(el("div", "muted", `Tx sent: ${shortAddr(hash)} — waiting…`));
-        await waitReceipt(hash);
-        resultBox.appendChild(el("div", "ok", "Pool buy confirmed."));
-        await refreshBalances();
-        renderWallet();
-        execBtn.disabled = false;
-        execBtn.textContent = "Get quote";
-        return;
-      }
-      // Sell: plan first (shows approvals), then execute.
-      if (!lastPlan) {
+        // Pool buys used to execute with no review at all — now they get the
+        // same review modal as every other signing flow.
         execBtn.disabled = true;
         execBtn.textContent = "Building plan…";
-        const bal = await getTokenBalance(l.token, state.account);
-        if (bal < lastAmountIn) {
-          resultBox.appendChild(el("div", "error", `Your ${l.meta!.symbol} balance (${fmtAmount(bal, l.meta!.decimals)}) is less than the sell amount.`));
-          execBtn.disabled = false;
-          execBtn.textContent = "Get quote";
+        if (state.ethBalance < lastAmountIn) {
+          resultBox.appendChild(el("div", "error", `Your ETH balance (${fmtAmount(state.ethBalance, 18)}) is less than the buy amount.`));
+          resetExec();
           return;
         }
-        lastPlan = await planPoolSwap(pool, l.token, lastAmountIn, state.slippageBps, state.account);
-        const p = lastPlan;
-        const prev = el("div", "preview");
-        prev.appendChild(el("div", "", "Review before signing in your wallet:"));
-        prev.appendChild(el("div", "", `You pay: ${fmtAmount(lastAmountIn, l.meta!.decimals)} ${l.meta!.symbol}`));
-        prev.appendChild(el("div", "", `You receive (min): ${fmtAmount(p.quote.minimumAmountOut, 18)} WETH`));
-        if (p.approvals.length > 0) {
-          prev.appendChild(el("div", "", `Approvals needed: ${p.approvals.map((a) => `${shortAddr(a.token)} → ${shortAddr(a.spender)}`).join(", ")}`));
-        }
-        resultBox.appendChild(prev);
-        execBtn.textContent = "Sign & execute in wallet";
-        execBtn.disabled = false;
+        const outMeta = lastOutMeta ?? { symbol: baseSymbol, decimals: l.meta!.decimals };
+        const tx = buildNativePoolBuy(pool, lastAmountIn, lastMinOut, state.account);
+        const m = openReviewModal({
+          signLabel: "Sign & execute in wallet",
+          onClose: () => resetExec(),
+        });
+        m.body.appendChild(reviewRow("You pay", `${fmtAmount(lastAmountIn, 18)} ETH`));
+        m.body.appendChild(reviewRow("You receive (min)", `${fmtAmount(lastMinOut, outMeta.decimals)} ${outMeta.symbol}`));
+        m.body.appendChild(reviewRow("To (pool)", reviewAddrValue(pool)));
+        resetExec();
+        m.signBtn.onclick = async () => {
+          try {
+            reviewBeginSign();
+            m.statusBox.appendChild(el("div", "muted", `Buying with ${fmtAmount(lastAmountIn, 18)} ETH via the native router — confirm in your wallet…`));
+            const hash = await sendTx(tx);
+            m.statusBox.appendChild(el("div", "muted", `Tx sent: ${shortAddr(hash)} — waiting…`));
+            await waitReceipt(hash);
+            m.statusBox.appendChild(el("div", "ok", "Pool buy confirmed."));
+            reviewFinish();
+            await opts.onExecuted?.();
+          } catch (err) {
+            reviewResetSign("Sign & execute in wallet");
+            showError(m.statusBox, err);
+          }
+        };
         return;
       }
+      // Sell: plan first (approvals show in the modal), then execute.
       execBtn.disabled = true;
-      execBtn.textContent = "Executing…";
-      const p = lastPlan;
-      for (const ap of p.approvals) {
-        const allowance = await getAllowance(ap.token, state.account, ap.spender);
-        if (allowance < ap.amount) {
-          resultBox.appendChild(el("div", "muted", `Approving ${shortAddr(ap.token)} for ${shortAddr(ap.spender)}…`));
-          const ah = await sendTx(buildApproveTx(ap.token, ap.spender, ap.amount));
-          await waitReceipt(ah);
-        }
+      execBtn.textContent = "Building plan…";
+      const bal = await getTokenBalance(l.token, state.account);
+      if (bal < lastAmountIn) {
+        resultBox.appendChild(el("div", "error", `Your ${l.meta!.symbol} balance (${fmtAmount(bal, l.meta!.decimals)}) is less than the sell amount.`));
+        resetExec();
+        return;
       }
-      resultBox.appendChild(el("div", "muted", "Sending pool swap — confirm in your wallet…"));
-      const hash = await sendTx(p.transaction);
-      resultBox.appendChild(el("div", "muted", `Tx sent: ${shortAddr(hash)} — waiting…`));
-      await waitReceipt(hash);
-      resultBox.appendChild(el("div", "ok", `Pool sell confirmed. Received at least ${fmtAmount(p.quote.minimumAmountOut, 18)} WETH (see the receipt for the exact amount).`));
-      lastPlan = null;
-      await refreshBalances();
-      renderWallet();
-    } catch (err) { showError(resultBox, err); }
-    execBtn.disabled = false;
-    execBtn.textContent = "Get quote";
+      const plan = await planPoolSwap(pool, l.token, lastAmountIn, state.slippageBps, state.account);
+      lastPlan = plan;
+      const m = openReviewModal({
+        signLabel: "Sign & execute in wallet",
+        onClose: () => { lastPlan = null; resetExec(); },
+      });
+      m.body.appendChild(reviewRow("You pay", `${fmtAmount(lastAmountIn, l.meta!.decimals)} ${l.meta!.symbol}`));
+      m.body.appendChild(reviewRow("You receive (min)", `${fmtAmount(plan.quote.minimumAmountOut, 18)} WETH`));
+      m.body.appendChild(reviewRow("To (pool)", reviewAddrValue(pool)));
+      if (plan.approvals.length > 0) {
+        m.body.appendChild(reviewRow("Approvals needed", plan.approvals.map((a) => `${shortAddr(a.token)} → ${shortAddr(a.spender)}`).join(", ")));
+      }
+      resetExec();
+      m.signBtn.onclick = async () => {
+        try {
+          reviewBeginSign();
+          const p = lastPlan!;
+          for (const ap of p.approvals) {
+            const allowance = await getAllowance(ap.token, state.account!, ap.spender);
+            if (allowance < ap.amount) {
+              m.statusBox.appendChild(el("div", "muted", `Approving ${shortAddr(ap.token)} for ${shortAddr(ap.spender)}…`));
+              const ah = await sendTx(buildApproveTx(ap.token, ap.spender, ap.amount));
+              await waitReceipt(ah);
+            }
+          }
+          m.statusBox.appendChild(el("div", "muted", "Sending pool swap — confirm in your wallet…"));
+          const hash = await sendTx(p.transaction);
+          m.statusBox.appendChild(el("div", "muted", `Tx sent: ${shortAddr(hash)} — waiting…`));
+          await waitReceipt(hash);
+          m.statusBox.appendChild(el("div", "ok", `Pool sell confirmed. Received at least ${fmtAmount(p.quote.minimumAmountOut, 18)} WETH (see the receipt for the exact amount).`));
+          lastPlan = null;
+          reviewFinish();
+          await opts.onExecuted?.();
+        } catch (err) {
+          reviewResetSign("Sign & execute in wallet");
+          showError(m.statusBox, err);
+        }
+      };
+    } catch (err) {
+      showError(resultBox, err);
+      resetExec();
+    }
   };
 
-  wrap.append(amountLabel, amountInput, balRow, slipLabel, slipInput, quoteBox, execBtn, resultBox);
+  form.append(amountLabel, amountInput, balRow, slipLabel, slipInput, quoteBox, execBtn, resultBox);
+  return {
+    element: form,
+    setDirection,
+    getDirection: () => direction,
+    refreshExecState,
+  };
+}
+
+function poolTradePanel(l: EnrichedLaunch, pool: Address): HTMLElement {
+  const wrap = el("div", "panel");
+  wrap.appendChild(el("h4", "", "Pool trading"));
+  wrap.appendChild(poolSwapForm(l, pool, {
+    onExecuted: async () => {
+      await refreshBalances();
+      renderWallet();
+    },
+  }).element);
   return wrap;
+}
+
+
+// ---------------------------------------------------------------------------
+// Swap page (standalone, Uniswap-style): token selector, flip, and the
+// shared swap form. The form is the same curveSwapForm / poolSwapForm the
+// detail Trade panel uses — no second copy of the swap execution code.
+// ---------------------------------------------------------------------------
+
+let swapSlotEl: HTMLElement | null = null;
+let swapFormHandle: SwapFormHandle | null = null;
+/** Direction persists across token changes (Uniswap keeps it too). */
+let swapDirection: "buy" | "sell" = "buy";
+
+function swapSelectedLaunch(): EnrichedLaunch | null {
+  if (!state.swapCurve) return null;
+  return state.launches.find((l) => l.curve.toLowerCase() === state.swapCurve!.toLowerCase()) ?? null;
+}
+
+/** Open the Swap page with a token preselected (detail / Discover entry points). */
+function openSwap(l: EnrichedLaunch): void {
+  state.swapCurve = l.curve;
+  try { history.replaceState(null, "", `#swap/${l.token}`); } catch { /* non-fatal */ }
+  showView("swap");
+  renderSwap();
+}
+
+function closeSwapMenu(): void {
+  const menu = document.querySelector(".swap-menu");
+  if (menu) menu.classList.add("hidden");
+  const btn = document.querySelector<HTMLButtonElement>(".swap-token-btn");
+  if (btn) btn.setAttribute("aria-expanded", "false");
+}
+
+/** Refresh the selector button in place (price/mcap as enrichment lands). */
+function refreshSwapSelector(): void {
+  const btn = document.querySelector<HTMLButtonElement>(".swap-token-btn");
+  if (!btn) return;
+  const l = swapSelectedLaunch();
+  btn.innerHTML = "";
+  if (!l) {
+    btn.appendChild(el("span", "", "Select a token"));
+    btn.appendChild(el("span", "muted", "▾"));
+    return;
+  }
+  btn.appendChild(tokenTile(l, "sm"));
+  const mid = el("div", "swap-token-mid");
+  mid.appendChild(el("div", "swap-token-sym", `$${l.meta?.symbol ?? shortAddr(l.token)}`));
+  mid.appendChild(el("div", "muted swap-token-name", l.meta?.name ?? shortAddr(l.token)));
+  btn.appendChild(mid);
+  btn.appendChild(el("span", "swap-token-price", l.price ? `${formatDisplayNumber(Number.parseFloat(l.price))} WETH` : "…"));
+  btn.appendChild(el("span", "muted", "▾"));
+}
+
+/** Fill the selector dropdown rows for the current search query. */
+function fillSwapMenu(q: string): void {
+  const menu = document.querySelector(".swap-menu");
+  const list = menu?.querySelector<HTMLElement>(".swap-menu-list");
+  if (!menu || !list) return;
+  list.innerHTML = "";
+  const query = q.trim().toLowerCase();
+  const items = state.launches.filter((l) => {
+    if (!query) return true;
+    const hay = `${l.meta?.name ?? ""} ${l.meta?.symbol ?? ""} ${l.token} ${l.curve} ${l.creator}`.toLowerCase();
+    return hay.includes(query);
+  });
+  if (state.launches.length === 0) {
+    list.appendChild(el("div", "empty", "Loading launches…"));
+    return;
+  }
+  if (items.length === 0) {
+    list.appendChild(el("div", "empty", "No launches match this search."));
+    return;
+  }
+  for (const l of items) {
+    const row = el("button", "swap-token-row") as HTMLButtonElement;
+    row.type = "button";
+    row.setAttribute("role", "option");
+    row.appendChild(tokenTile(l, "sm"));
+    const mid = el("div", "swap-token-mid");
+    mid.appendChild(el("div", "swap-token-sym", `$${l.meta?.symbol ?? shortAddr(l.token)}`));
+    mid.appendChild(el("div", "muted swap-token-name", l.meta?.name ?? shortAddr(l.token)));
+    row.appendChild(mid);
+    const mcap = launchMcap(l);
+    row.appendChild(el("span", "swap-token-price", mcap === null
+      ? (l.price ? `${formatDisplayNumber(Number.parseFloat(l.price))} WETH` : "…")
+      : `${formatDisplayNumber(mcap)} ETH`));
+    row.onclick = () => {
+      state.swapCurve = l.curve;
+      closeSwapMenu();
+      refreshSwapSelector();
+      renderSwapForm();
+      try { history.replaceState(null, "", `#swap/${l.token}`); } catch { /* non-fatal */ }
+    };
+    list.appendChild(row);
+  }
+}
+
+/** Render the swap form for the currently selected token into the slot. */
+function renderSwapForm(): void {
+  const slot = swapSlotEl;
+  if (!slot) return;
+  slot.innerHTML = "";
+  swapFormHandle = null;
+  const l = swapSelectedLaunch();
+  if (!l) {
+    slot.dataset.state = "empty";
+    slot.appendChild(el("div", "empty", "Pick a token above to swap."));
+    return;
+  }
+  if (!l.meta || !l.curveData) {
+    slot.dataset.state = "loading";
+    const sk = el("div", "skeleton");
+    sk.style.height = "220px";
+    slot.appendChild(sk);
+    slot.appendChild(el("div", "muted", "Loading launch data from chain…"));
+    return;
+  }
+  const status = l.curveData.state.status;
+  const opts: SwapFormOpts = {
+    payLabel: "You pay",
+    initialDirection: swapDirection,
+    quoteStyle: "swap",
+    disableUntilQuote: true,
+    idleExecLabel: (dir) => dir === "buy" ? `Buy $${l.meta!.symbol}` : `Sell $${l.meta!.symbol}`,
+    onExecuted: async () => {
+      await refreshBalances();
+      renderWallet();
+      const fresh = await getCurveFull(l.curve);
+      l.curveData = fresh;
+      l.price = priceFromSqrtPrice(fresh.state.sqrtPrice, l.meta!.decimals, 18);
+      renderDiscover();
+      refreshSwapSelector();
+    },
+  };
+  if (status === 1) {
+    slot.dataset.state = "ready";
+    swapFormHandle = curveSwapForm(l, opts);
+    slot.appendChild(swapFormHandle.element);
+  } else if (status === 3) {
+    slot.dataset.state = "ready";
+    swapFormHandle = poolSwapForm(l, l.curveData.state.canonicalPool, opts);
+    slot.appendChild(swapFormHandle.element);
+  } else if (status === 2) {
+    slot.dataset.state = "ready";
+    slot.appendChild(el("div", "warn", "This curve is ready to graduate. Graduation migrates liquidity to the pool and is permissionless."));
+    const openBtn = el("button", "btn primary", "Open launch") as HTMLButtonElement;
+    openBtn.onclick = () => openDetail(l);
+    slot.appendChild(openBtn);
+  } else {
+    slot.dataset.state = "ready";
+    slot.appendChild(el("div", "muted", `Curve status ${status} — trading is not available in this state.`));
+  }
+}
+
+/**
+ * Called when launch data lands while the user is on Swap: refresh the
+ * selector in place, auto-select the top token if none is picked yet, and
+ * render the form if it was waiting on data. Never wipes a typed amount —
+ * the form only re-renders from its loading or empty state, never once it
+ * is ready. (The empty case matters: on a fresh load the slot starts empty
+ * because topByMcap has no prices yet, so the auto-select below is the
+ * first moment a token exists — without this the selector would show the
+ * token but no trade form would ever appear.)
+ */
+function refreshSwapLive(): void {
+  if (state.view !== "swap") return;
+  refreshSwapSelector();
+  if (!swapSelectedLaunch() && state.launches.length > 0) {
+    const top = topByMcap();
+    if (top) {
+      state.swapCurve = top.curve;
+      refreshSwapSelector();
+    }
+  }
+  const slot = swapSlotEl;
+  if (slot && (slot.dataset.state === "loading" || slot.dataset.state === "empty")) {
+    const l = swapSelectedLaunch();
+    if (l) renderSwapForm();
+  }
+}
+
+function renderSwap(): void {
+  const view = $("#view-swap");
+  view.innerHTML = "";
+  swapFormHandle = null;
+  const head = el("div", "swap-head");
+  head.appendChild(el("h1", "swap-title", "Swap"));
+  head.appendChild(el("p", "muted swap-sub", "Trade any launch on the curve or the pool — live quotes from the chain, no fake numbers."));
+  view.appendChild(head);
+  const card = el("div", "panel swap-card");
+  // Token selector.
+  const selWrap = el("div", "swap-selector");
+  const selBtn = el("button", "btn swap-token-btn") as HTMLButtonElement;
+  selBtn.type = "button";
+  selBtn.setAttribute("aria-haspopup", "listbox");
+  selBtn.setAttribute("aria-expanded", "false");
+  const selMenu = el("div", "swap-menu hidden");
+  selMenu.setAttribute("role", "listbox");
+  const search = el("input", "swap-menu-search") as HTMLInputElement;
+  search.type = "search";
+  search.placeholder = "Search by name, ticker or address";
+  search.setAttribute("aria-label", "Search tokens");
+  search.oninput = () => fillSwapMenu(search.value);
+  const list = el("div", "swap-menu-list");
+  selMenu.append(search, list);
+  selWrap.append(selBtn, selMenu);
+  selBtn.onclick = () => {
+    if (selMenu.classList.contains("hidden")) {
+      closeWalletMenu();
+      closeMobileNav();
+      search.value = "";
+      fillSwapMenu("");
+      selMenu.classList.remove("hidden");
+      selBtn.setAttribute("aria-expanded", "true");
+      search.focus();
+    } else {
+      closeSwapMenu();
+    }
+  };
+  card.appendChild(selWrap);
+  // Flip direction (Uniswap-style ⇅ between the token and the pay field).
+  const flipRow = el("div", "swap-flip-row");
+  const flipBtn = el("button", "btn icon-btn swap-flip", "⇅") as HTMLButtonElement;
+  flipBtn.type = "button";
+  flipBtn.title = "Flip direction (buy / sell)";
+  flipBtn.setAttribute("aria-label", "Flip swap direction");
+  flipBtn.onclick = () => {
+    swapDirection = swapDirection === "buy" ? "sell" : "buy";
+    swapFormHandle?.setDirection(swapDirection);
+  };
+  flipRow.appendChild(flipBtn);
+  card.appendChild(flipRow);
+  // Swap form slot.
+  const slot = el("div", "swap-form-slot");
+  swapSlotEl = slot;
+  card.appendChild(slot);
+  view.appendChild(card);
+  if (!state.swapCurve && state.launches.length > 0) {
+    const top = topByMcap();
+    if (top) state.swapCurve = top.curve;
+  }
+  refreshSwapSelector();
+  renderSwapForm();
 }
 
 // Placeholder height (px) for the loading skeleton on the detail view.
@@ -1891,6 +2338,9 @@ async function renderDetail(curve: string): Promise<void> {
   expLink.className = "btn text";
   expLink.insertAdjacentHTML("afterbegin", ICON_EXTERNAL_LINK);
   addrRow.appendChild(expLink);
+  const swapBtn = el("button", "btn text", "Swap") as HTMLButtonElement;
+  swapBtn.onclick = () => openSwap(l);
+  addrRow.appendChild(swapBtn);
   names.appendChild(addrRow);
   idBox.appendChild(names);
   header.appendChild(idBox);
@@ -2270,16 +2720,22 @@ function base64Utf8(s: string): string {
 }
 
 /**
- * Image state for the create form. A picked file lives ONLY in this browser
- * until a future upload step turns it into a public URL — it has no URL
- * and cannot go into the on-chain metadata yet. Only a pasted public link
- * (https:// or ipfs://) can. The upload step (decided by the user: no-key
- * anonymous host) hooks in here: it calls setCreateImageLink(url) after the
- * upload, and everything downstream — preview, metadata, launch warning —
- * follows from that one call.
+ * Image state for the create form. A picked file is auto-uploaded to a
+ * no-key anonymous host (catbox.moe first, uguu.se fallback) so it gets
+ * a public URL — setCreateImageLink(url) is the single funnel: preview,
+ * metadata, and the launch warning all follow from that one call. Until
+ * the upload succeeds (or if it fails), the file lives ONLY in this
+ * browser and cannot go into the on-chain metadata. Only the picked
+ * image file is ever uploaded — nothing else leaves the browser.
  */
 let createFile: { dataUrl: string; fileName: string } | null = null;
 let createLinkUrl = "";
+/** The picked File itself, kept so a failed auto-upload can be retried. */
+let createImageFile: File | null = null;
+/** Upload progress for the picked image ("error" carries the message). */
+let createImageUpload: { state: "idle" | "uploading" | "error"; error?: string } = { state: "idle" };
+/** Monotonic guard: only the newest pick's upload result applies. */
+let createImageUploadSeq = 0;
 /** True once the user has typed/pasted their own metadata URI — auto-compose stops then. */
 let metadataUserSet = false;
 let lastAutoMetadata = "";
@@ -2291,13 +2747,81 @@ function effectiveCreateImage(): { kind: "link" | "file"; src: string } | null {
   return null;
 }
 
-/** Future upload hook: an upload step calls this with the public image URL. */
+/** Upload hook: called with the public image URL after a successful
+ *  upload (or by a future upload step). The metadata field is refreshed
+ *  here too, so the image URL lands in the metadata immediately —
+ *  refreshMetadataURI respects a user-set custom URI and leaves it alone. */
 function setCreateImageLink(url: string): void {
   createLinkUrl = url;
   const link = $("#create-image-link") as HTMLInputElement;
   link.value = url;
   $("#create-link-wrap").classList.remove("hidden");
   refreshCreateImage();
+  refreshMetadataURI();
+}
+
+/** fetch with a hard timeout (AbortController) — an anonymous host that
+ *  never answers must not hang the form forever. */
+async function fetchWithTimeout(url: string, init: RequestInit, ms: number): Promise<Response> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/**
+ * Upload one image file to a no-key anonymous host; returns the public
+ * direct URL. catbox.moe first (POST user/api.php, reqtype=fileupload,
+ * fileToUpload — success is the plain-text https://files.catbox.moe/…
+ * link; files persist), uguu.se fallback (POST /upload, files[] — JSON
+ * { success, files: [{ url }]}, direct https://d.uguu.se/… link,
+ * ~24h retention). No API key anywhere; ONLY this image file is sent.
+ * Throws when both hosts fail, so the caller can show the fallback.
+ */
+async function uploadImageFile(file: File): Promise<string> {
+  try {
+    const form = new FormData();
+    form.append("reqtype", "fileupload");
+    form.append("fileToUpload", file);
+    const res = await fetchWithTimeout("https://catbox.moe/user/api.php", { method: "POST", body: form }, 30_000);
+    const text = (await res.text()).trim();
+    if (res.ok && text.startsWith("https://files.catbox.moe/")) return text;
+  } catch { /* fall through to uguu.se */ }
+  const form = new FormData();
+  form.append("files[]", file);
+  try {
+    const res = await fetchWithTimeout("https://uguu.se/upload", { method: "POST", body: form }, 90_000);
+    const json = (await res.json()) as { success?: boolean; files?: Array<{ url?: string }> };
+    const url = json?.files?.[0]?.url;
+    if (res.ok && json?.success && typeof url === "string" && url.startsWith("https://")) return url;
+  } catch { /* fall through to the friendly error below */ }
+  throw new Error("Upload failed — paste a public image link instead.");
+}
+
+/**
+ * Auto-upload the picked image. On success the public URL flows through
+ * setCreateImageLink (preview + metadata follow). Only the newest pick's
+ * result applies — an older upload finishing late is ignored. A link the
+ * user pasted while the upload was in flight wins and is not clobbered.
+ */
+async function autoUploadCreateImage(file: File): Promise<void> {
+  const seq = ++createImageUploadSeq;
+  createImageUpload = { state: "uploading" };
+  refreshCreateImage();
+  try {
+    const url = await uploadImageFile(file);
+    if (seq !== createImageUploadSeq) return; // superseded by a newer pick
+    createImageUpload = { state: "idle" };
+    if (!createLinkUrl) setCreateImageLink(url);
+    else refreshCreateImage();
+  } catch (err) {
+    if (seq !== createImageUploadSeq) return; // superseded by a newer pick
+    createImageUpload = { state: "error", error: err instanceof Error ? err.message : "Upload failed — paste a public image link instead." };
+    refreshCreateImage();
+  }
 }
 
 /** The form fields that go into the metadata JSON (image only when public). */
@@ -2389,6 +2913,8 @@ function refreshCreateImage(): void {
   const removeBtn = $("#dropzone-remove");
   const status = $("#image-status");
   const note = $("#create-image-note");
+  const uploadBtn = $("#create-image-upload") as HTMLButtonElement;
+  const spinner = $("#image-upload-spinner");
   const media = $("#create-preview-media");
   const rocket = document.querySelector("#dropzone-placeholder svg")?.cloneNode(true) as SVGSVGElement | undefined;
   media.innerHTML = "";
@@ -2397,6 +2923,8 @@ function refreshCreateImage(): void {
     dzImg.removeAttribute("src");
     dzPlaceholder.classList.remove("hidden");
     removeBtn.classList.add("hidden");
+    uploadBtn.classList.add("hidden");
+    spinner.classList.add("hidden");
     status.textContent = "";
     note.textContent = "";
     note.className = "field-note muted";
@@ -2414,13 +2942,33 @@ function refreshCreateImage(): void {
   mediaImg.onerror = () => { mediaImg.remove(); if (rocket) media.appendChild(rocket); };
   media.appendChild(mediaImg);
   if (img.kind === "file") {
-    status.textContent = "local only";
-    note.textContent = "This image only lives in your browser for now — it has no public URL, so it cannot go into the token metadata yet. Paste a public image link below to include it.";
-    note.className = "field-note warn-text";
+    if (createImageUpload.state === "uploading") {
+      status.textContent = "Uploading image…";
+      note.textContent = "Uploading to a public host so it can go into the token metadata…";
+      note.className = "field-note muted";
+      spinner.classList.remove("hidden");
+      uploadBtn.classList.add("hidden");
+    } else if (createImageUpload.state === "error") {
+      status.textContent = "upload failed";
+      note.textContent = `${createImageUpload.error ?? "Upload failed."} You can retry the upload or paste a public image link below.`;
+      note.className = "field-note error-text";
+      spinner.classList.add("hidden");
+      uploadBtn.classList.remove("hidden");
+    } else {
+      status.textContent = "local only";
+      note.textContent = "This image only lives in your browser for now — it has no public URL, so it cannot go into the token metadata yet. Paste a public image link below to include it.";
+      note.className = "field-note warn-text";
+      spinner.classList.add("hidden");
+      // A local file with no link and no upload in flight (e.g. picked
+      // before this code deployed): offer the explicit upload action.
+      uploadBtn.classList.remove("hidden");
+    }
   } else {
     status.textContent = "linked";
     note.textContent = "";
     note.className = "field-note muted";
+    spinner.classList.add("hidden");
+    uploadBtn.classList.add("hidden");
   }
 }
 
@@ -2454,7 +3002,12 @@ function handleCreateImageFile(file: File | undefined | null): void {
   const reader = new FileReader();
   reader.onload = () => {
     createFile = { dataUrl: String(reader.result), fileName: file.name };
+    createImageFile = file;
+    createImageUpload = { state: "idle" };
     refreshCreateImage();
+    // Auto-upload: the preview shows immediately; the public URL lands
+    // in the link field + metadata as soon as the host answers.
+    void autoUploadCreateImage(file);
   };
   reader.onerror = () => {
     note.textContent = "Could not read that image — try another file.";
@@ -2465,6 +3018,9 @@ function handleCreateImageFile(file: File | undefined | null): void {
 
 function clearCreateImage(): void {
   createFile = null;
+  createImageFile = null;
+  createImageUpload = { state: "idle" };
+  createImageUploadSeq++; // an in-flight upload for the removed file is ignored
   createLinkUrl = "";
   ($("#create-image-link") as HTMLInputElement).value = "";
   ($("#create-image-file") as HTMLInputElement).value = "";
@@ -2521,6 +3077,12 @@ function initCreateForm(): void {
     fileInput.value = "";
   });
   $("#dropzone-remove").addEventListener("click", (e) => { e.stopPropagation(); clearCreateImage(); });
+  // Explicit upload action: retry after a failed auto-upload, or upload a
+  // local file that was picked before this code deployed.
+  $("#create-image-upload").addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (createImageFile && !createLinkUrl) void autoUploadCreateImage(createImageFile);
+  });
   $("#create-paste-link-toggle").addEventListener("click", () => {
     const wrap = $("#create-link-wrap");
     wrap.classList.toggle("hidden");
@@ -2545,42 +3107,70 @@ function initCreateForm(): void {
     refreshMetadataURI();
   });
   // Review modal close paths: X, Cancel, backdrop click. (Escape + focus
-  // trap live in openLaunchReviewModal's keydown handler.)
+  // trap live in openReviewModal's keydown handler.)
   const reviewOverlay = $("#launch-review-modal");
   reviewOverlay.addEventListener("click", (e) => {
-    if (e.target === reviewOverlay) closeLaunchReviewModal();
+    if (e.target === reviewOverlay) closeReviewModal();
   });
-  $("#launch-review-x").addEventListener("click", () => closeLaunchReviewModal());
-  $("#launch-review-cancel").addEventListener("click", () => closeLaunchReviewModal());
+  $("#launch-review-x").addEventListener("click", () => closeReviewModal());
+  $("#launch-review-cancel").addEventListener("click", () => closeReviewModal());
   refreshCreatePreview();
 }
 
 /* ------------------------------------------------------------------------- */
-/* Launch review modal: the "Review before signing" step lives in this      */
-/* dialog only. The Sign action is inside the modal, never inline on the    */
-/* page. Closes on Escape / backdrop click / Cancel / X; focus moves in on  */
-/* open, is trapped while open, and returns on close.                       */
+/* Shared review modal: the "Review before signing" step for EVERY signing  */
+/* flow — Create, curve Trade, pool Trade, and the standalone Swap page.    */
+/* One modal, one pattern: the Sign action lives only in the dialog, never  */
+/* inline on the page. Closes on Escape / backdrop click / Cancel / X;      */
+/* focus moves in on open, is trapped while open, and returns on close.     */
+/* While a sign is in flight the modal locks so the result can't be lost.   */
 /* ------------------------------------------------------------------------- */
 
-let launchReviewReturnFocus: HTMLElement | null = null;
-let launchReviewKeyHandler: ((e: KeyboardEvent) => void) | null = null;
-let launchReviewBusy = false;
+let reviewReturnFocus: HTMLElement | null = null;
+let reviewKeyHandler: ((e: KeyboardEvent) => void) | null = null;
+let reviewBusy = false;
+/** Fired when the modal closes (Cancel / X / Escape / backdrop) — lets a
+ * caller discard a prepared plan. Not fired when the modal was never open. */
+let reviewOnClose: (() => void) | null = null;
 
-function openLaunchReviewModal(): void {
+interface ReviewModalParts {
+  body: HTMLElement;
+  warnBox: HTMLElement;
+  statusBox: HTMLElement;
+  signBtn: HTMLButtonElement;
+  cancelBtn: HTMLButtonElement;
+  xBtn: HTMLButtonElement;
+}
+
+/**
+ * Open the shared review modal. Clears the body/warn/status boxes and the
+ * sign button state, focuses Sign, and installs the Escape + Tab-trap
+ * handler. Callers fill the body (review rows) and wire signBtn.onclick.
+ */
+function openReviewModal(opts: { signLabel: string; onClose?: () => void }): ReviewModalParts {
   const overlay = $("#launch-review-modal");
-  launchReviewReturnFocus = document.activeElement as HTMLElement | null;
+  reviewReturnFocus = document.activeElement as HTMLElement | null;
+  reviewOnClose = opts.onClose ?? null;
   overlay.classList.remove("hidden");
   document.body.style.overflow = "hidden";
+  const body = $("#launch-review-body");
+  const warnBox = $("#launch-review-warn");
+  const statusBox = $("#launch-review-status");
+  body.innerHTML = "";
+  warnBox.innerHTML = "";
+  statusBox.innerHTML = "";
   const signBtn = $("#launch-review-sign") as HTMLButtonElement;
   const cancelBtn = $("#launch-review-cancel") as HTMLButtonElement;
+  const xBtn = $("#launch-review-x") as HTMLButtonElement;
   signBtn.disabled = false;
+  signBtn.textContent = opts.signLabel;
   signBtn.classList.remove("hidden");
   cancelBtn.disabled = false;
   cancelBtn.textContent = "Cancel";
-  ($("#launch-review-status") as HTMLElement).innerHTML = "";
+  xBtn.disabled = false;
   signBtn.focus();
-  launchReviewKeyHandler = (e: KeyboardEvent) => {
-    if (e.key === "Escape") { e.preventDefault(); closeLaunchReviewModal(); return; }
+  reviewKeyHandler = (e: KeyboardEvent) => {
+    if (e.key === "Escape") { e.preventDefault(); closeReviewModal(); return; }
     if (e.key !== "Tab") return;
     const dlg = $("#launch-review-modal .modal") as HTMLElement;
     const items = [...dlg.querySelectorAll<HTMLElement>("button, summary, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])")]
@@ -2591,26 +3181,85 @@ function openLaunchReviewModal(): void {
     if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   };
-  document.addEventListener("keydown", launchReviewKeyHandler);
+  document.addEventListener("keydown", reviewKeyHandler);
+  return { body, warnBox, statusBox, signBtn, cancelBtn, xBtn };
 }
 
-function closeLaunchReviewModal(): void {
+function closeReviewModal(): void {
   const overlay = $("#launch-review-modal");
   if (overlay.classList.contains("hidden")) return;
   // While a sign is in flight the outcome lives in this dialog — do not let
   // the user dismiss it mid-flight and lose the result.
-  if (launchReviewBusy) return;
+  if (reviewBusy) return;
   overlay.classList.add("hidden");
   document.body.style.overflow = "";
-  if (launchReviewKeyHandler) {
-    document.removeEventListener("keydown", launchReviewKeyHandler);
-    launchReviewKeyHandler = null;
+  if (reviewKeyHandler) {
+    document.removeEventListener("keydown", reviewKeyHandler);
+    reviewKeyHandler = null;
   }
-  if (launchReviewReturnFocus && document.contains(launchReviewReturnFocus)) {
-    launchReviewReturnFocus.focus();
-  } else {
-    ($("#create-submit") as HTMLButtonElement).focus();
+  if (reviewReturnFocus && document.contains(reviewReturnFocus)) {
+    reviewReturnFocus.focus();
   }
+  const cb = reviewOnClose;
+  reviewOnClose = null;
+  if (cb) cb();
+}
+
+/** Sign started: lock the dialog (no dismiss) and show the waiting state. */
+function reviewBeginSign(): void {
+  reviewBusy = true;
+  const signBtn = $("#launch-review-sign") as HTMLButtonElement;
+  const cancelBtn = $("#launch-review-cancel") as HTMLButtonElement;
+  const xBtn = $("#launch-review-x") as HTMLButtonElement;
+  signBtn.disabled = true;
+  cancelBtn.disabled = true;
+  xBtn.disabled = true;
+  signBtn.textContent = "Waiting for wallet…";
+}
+
+/** Sign succeeded: hide Sign, turn Cancel into Close, focus it. */
+function reviewFinish(): void {
+  reviewBusy = false;
+  const signBtn = $("#launch-review-sign") as HTMLButtonElement;
+  const cancelBtn = $("#launch-review-cancel") as HTMLButtonElement;
+  signBtn.classList.add("hidden");
+  cancelBtn.disabled = false;
+  cancelBtn.textContent = "Close";
+  cancelBtn.focus();
+}
+
+/** Sign failed: unlock the dialog and restore the Sign button label. */
+function reviewResetSign(signLabel: string): void {
+  reviewBusy = false;
+  const signBtn = $("#launch-review-sign") as HTMLButtonElement;
+  const cancelBtn = $("#launch-review-cancel") as HTMLButtonElement;
+  const xBtn = $("#launch-review-x") as HTMLButtonElement;
+  signBtn.disabled = false;
+  signBtn.textContent = signLabel;
+  cancelBtn.disabled = false;
+  xBtn.disabled = false;
+}
+
+/** One review row (label + value), the same shape in every signing modal. */
+function reviewRow(k: string, v: string | HTMLElement): HTMLElement {
+  const row = el("div", "row");
+  row.appendChild(el("span", "k", k));
+  if (typeof v === "string") row.appendChild(el("span", "v", v));
+  else row.appendChild(v);
+  return row;
+}
+
+/** Short address + Copy button for a "To" review row. */
+function reviewAddrValue(address: string): HTMLElement {
+  const wrap = el("span", "uri-wrap");
+  const line = el("div", "uri-line");
+  line.appendChild(el("span", "uri-text", shortAddr(address)));
+  const copy = el("button", "btn copy-btn", "Copy") as HTMLButtonElement;
+  copy.type = "button";
+  copy.onclick = () => void copyText(address, copy);
+  line.appendChild(copy);
+  wrap.appendChild(line);
+  return wrap;
 }
 
 /** Truncate a long URI for display: start…end. */
@@ -2701,56 +3350,40 @@ async function handleCreate(): Promise<void> {
   }
   try {
     const preview = buildCreateLaunchTx(name, symbol, metadataURI, c.config.tokenDecimals, c.configId, c.config.poolCreationFee);
-    // Fill the review modal (replaces the old inline review box — the Sign
-    // action lives only in the dialog).
-    const body = $("#launch-review-body");
-    body.innerHTML = "";
+    // Fill the shared review modal (the Sign action lives only in the dialog).
+    const m = openReviewModal({ signLabel: "Sign & create launch" });
     for (const [k, v] of [
       ["Token", `${name} (${symbol}), ${c.config.tokenDecimals} decimals`],
       ["Config", `#${c.configId.toString()} — hash ${shortAddr(c.configHash)}`],
       ["Factory", shortAddr(preview.factory)],
       ["Pool creation fee (msg.value)", `${fmtAmount(preview.poolCreationFee, 18)} ETH`],
     ] as const) {
-      const row = el("div", "row");
-      row.appendChild(el("span", "k", k));
-      row.appendChild(el("span", "v", v));
-      body.appendChild(row);
+      m.body.appendChild(reviewRow(k, v));
     }
     const uriRow = el("div", "row");
     uriRow.appendChild(el("span", "k", "Metadata URI"));
     uriRow.appendChild(metadataUriWidget(metadataURI));
-    body.appendChild(uriRow);
+    m.body.appendChild(uriRow);
     // Local-image warning, also inside the modal before Sign.
-    const warnBox = $("#launch-review-warn");
-    warnBox.innerHTML = "";
     if (createFile && !createLinkUrl) {
       // Honesty rule: a locally picked file has no public URL and cannot go
       // on-chain. Say so BEFORE the user confirms — never silently drop it.
       const w = el("div", "warn", "The image you picked only lives in this browser — it has no public URL, so this launch will NOT include it in the token metadata. Paste a public image link to include it, or launch without an image.");
       const fixBtn = el("button", "btn text", "Paste a public image link") as HTMLButtonElement;
       fixBtn.onclick = () => {
-        closeLaunchReviewModal();
+        closeReviewModal();
         $("#create-link-wrap").classList.remove("hidden");
         ($("#create-image-link") as HTMLInputElement).focus();
       };
       w.appendChild(fixBtn);
-      warnBox.appendChild(w);
+      m.warnBox.appendChild(w);
     }
-    const statusBox = $("#launch-review-status");
-    statusBox.innerHTML = "";
-    const signBtn = $("#launch-review-sign") as HTMLButtonElement;
-    const cancelBtn = $("#launch-review-cancel") as HTMLButtonElement;
-    const xBtn = $("#launch-review-x") as HTMLButtonElement;
-    signBtn.onclick = async () => {
+    m.signBtn.onclick = async () => {
       try {
-        launchReviewBusy = true;
-        signBtn.disabled = true;
-        cancelBtn.disabled = true;
-        xBtn.disabled = true;
-        signBtn.textContent = "Waiting for wallet…";
-        statusBox.appendChild(el("div", "muted", "Sending createLaunch — confirm in your wallet…"));
+        reviewBeginSign();
+        m.statusBox.appendChild(el("div", "muted", "Sending createLaunch — confirm in your wallet…"));
         const hash = await sendTx(preview.transaction);
-        statusBox.appendChild(el("div", "muted", `Tx sent: ${shortAddr(hash)} — waiting for confirmation…`));
+        m.statusBox.appendChild(el("div", "muted", `Tx sent: ${shortAddr(hash)} — waiting for confirmation…`));
         const created = await waitForLaunchCreated(hash, c.configId, c.configHash);
         // Show the new launch immediately — do NOT wait for the bulk scan
         // to reach its block before it becomes visible.
@@ -2769,7 +3402,7 @@ async function handleCreate(): Promise<void> {
           decimals: c.config.tokenDecimals,
           totalSupply: c.config.totalSupply,
         });
-        statusBox.appendChild(el("div", "ok", `Launch created! Token ${shortAddr(created.token)} · Curve ${shortAddr(created.curve)}`));
+        m.statusBox.appendChild(el("div", "ok", `Launch created! Token ${shortAddr(created.token)} · Curve ${shortAddr(created.curve)}`));
         const openBtn = el("button", "btn", "Open launch") as HTMLButtonElement;
         openBtn.onclick = () => {
           // Navigate straight to the detail view from the known addresses —
@@ -2779,22 +3412,13 @@ async function handleCreate(): Promise<void> {
           showView("detail");
           void renderDetail(created.curve);
         };
-        statusBox.appendChild(openBtn);
-        launchReviewBusy = false;
-        signBtn.classList.add("hidden");
-        cancelBtn.disabled = false;
-        cancelBtn.textContent = "Close";
-        cancelBtn.focus();
+        m.statusBox.appendChild(openBtn);
+        reviewFinish();
       } catch (err) {
-        launchReviewBusy = false;
-        showError(statusBox, err);
-        signBtn.disabled = false;
-        signBtn.textContent = "Sign & create launch";
-        cancelBtn.disabled = false;
-        xBtn.disabled = false;
+        reviewResetSign("Sign & create launch");
+        showError(m.statusBox, err);
       }
     };
-    openLaunchReviewModal();
   } catch (err) {
     showError(resultBox, err);
   }
@@ -2808,20 +3432,26 @@ async function handleCreate(): Promise<void> {
 // Theme (light/dark) + deep links
 // ---------------------------------------------------------------------------
 
-function showView(name: "discover" | "create" | "detail" | "profile"): void {
+function showView(name: "discover" | "create" | "detail" | "profile" | "swap"): void {
   // A view change dismisses the review modal (e.g. "Open launch" after a
   // successful create) — its result lives in the new view, not behind it.
-  closeLaunchReviewModal();
+  closeReviewModal();
   state.view = name;
-  for (const v of ["discover", "create", "detail", "profile"] as const) {
+  for (const v of ["discover", "create", "detail", "profile", "swap"] as const) {
     $("#view-" + v).classList.toggle("hidden", v !== name);
   }
-  // Only Discover and Create Launch live in the nav now; Profile is reached
+  // Discover, Create Launch, and Swap live in the nav; Profile is reached
   // from the wallet dropdown, and Detail never has an active tab. The mobile
   // hamburger items mirror the desktop tabs' active state.
-  for (const t of ["discover", "create"] as const) {
+  for (const t of ["discover", "create", "swap"] as const) {
     $(`#tab-${t}`).classList.toggle("active", t === name);
     $(`#mnav-${t}`).classList.toggle("active", t === name);
+  }
+  // "Recently viewed" is a discovery aid — it does not belong on Profile.
+  if (name === "profile") {
+    $("#recent-row").classList.add("hidden");
+  } else {
+    renderRecent();
   }
   if (name === "create") refreshCreatePreview();
 }
@@ -2882,6 +3512,7 @@ async function boot(): Promise<void> {
 
   $("#tab-discover").onclick = () => { try { history.replaceState(null, "", "#discover"); } catch { /* non-fatal */ } showView("discover"); renderDiscover(); ensureBackgroundStarted(); };
   $("#tab-create").onclick = () => { try { history.replaceState(null, "", "#create"); } catch { /* non-fatal */ } showView("create"); void loadConfigsForForm(); };
+  $("#tab-swap").onclick = () => { try { history.replaceState(null, "", "#swap"); } catch { /* non-fatal */ } showView("swap"); renderSwap(); ensureBackgroundStarted(); };
   // Mobile hamburger nav: the same Discover / Create Launch actions as the
   // desktop tabs (which are hidden on mobile), plus the Faucet link. An item
   // tap navigates and closes the menu.
@@ -2893,6 +3524,7 @@ async function boot(): Promise<void> {
   };
   $("#mnav-discover").onclick = () => { closeMobileNav(); $("#tab-discover").click(); };
   $("#mnav-create").onclick = () => { closeMobileNav(); $("#tab-create").click(); };
+  $("#mnav-swap").onclick = () => { closeMobileNav(); $("#tab-swap").click(); };
   $("#mnav-faucet").onclick = () => closeMobileNav();
   // Mobile nav: close on outside click.
   document.addEventListener("click", (e) => {
@@ -2903,6 +3535,14 @@ async function boot(): Promise<void> {
     if (nav.contains(target)) return;
     closeMobileNav();
   });
+  // Token selector dropdown on the Swap page: close on outside click.
+  document.addEventListener("click", (e) => {
+    const menu = document.querySelector(".swap-menu:not(.hidden)");
+    if (!menu) return;
+    const wrap = menu.closest(".swap-selector");
+    if (wrap && wrap.contains(e.target as Node)) return;
+    closeSwapMenu();
+  });
   // Wallet dropdown: close on outside click / Escape; arrow keys move between
   // the menu items. Registered once at boot; the menu itself is rendered by
   // renderWallet() whenever the account state changes.
@@ -2912,11 +3552,12 @@ async function boot(): Promise<void> {
     if (wrap.contains(e.target as Node)) return;
     closeWalletMenu();
   });
-  // Wallet dropdown + mobile nav: close on Escape; arrow keys move between
-  // the open menu's items. Only one menu can be open at a time.
+  // Wallet dropdown + mobile nav + Swap token menu: close on Escape; arrow
+  // keys move between the open menu's items. Only one menu can be open at a time.
   document.addEventListener("keydown", (e) => {
     const walletMenu = document.querySelector<HTMLElement>(".wallet-menu:not(.hidden)");
     const mobileNav = document.querySelector<HTMLElement>("#mobile-nav:not(.hidden)");
+    const swapMenu = document.querySelector<HTMLElement>(".swap-menu:not(.hidden)");
     if (e.key === "Escape") {
       if (walletMenu) {
         closeWalletMenu();
@@ -2926,12 +3567,16 @@ async function boot(): Promise<void> {
         closeMobileNav();
         (document.querySelector("#nav-toggle") as HTMLButtonElement | null)?.focus();
       }
+      if (swapMenu) {
+        closeSwapMenu();
+        document.querySelector<HTMLButtonElement>(".swap-token-btn")?.focus();
+      }
       return;
     }
-    const menu = walletMenu ?? mobileNav;
+    const menu = walletMenu ?? mobileNav ?? swapMenu;
     if (!menu) return;
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    const items = [...menu.querySelectorAll<HTMLElement>(".wallet-menu-item")];
+    const items = [...menu.querySelectorAll<HTMLElement>(".wallet-menu-item, .swap-token-row")];
     if (items.length === 0) return;
     const i = items.indexOf(document.activeElement as HTMLElement);
     e.preventDefault();
@@ -2974,7 +3619,6 @@ async function boot(): Promise<void> {
   };
   $("#create-submit").onclick = () => void handleCreate();
   initCreateForm();
-  renderRecent();
 
   // Restore cached launches FIRST so the list paints instantly, before any
   // network call (verifyCore takes tens of seconds on the public RPC).
@@ -2982,6 +3626,10 @@ async function boot(): Promise<void> {
   state.launches = cache.launches;
   state.scanStatus = cache.launches.length > 0 ? `restored ${cache.launches.length} cached launches` : "idle";
   renderDiscover();
+  // Recently viewed needs the launches in state to resolve curves to chips
+  // — render it after the cache restore, not before (it used to run above
+  // and hide the row on every fresh load until the next detail visit).
+  renderRecent();
   void seedChainHead();
 
   // Deep link: #detail/<curve> opens a launch directly (shareable links).
@@ -3004,13 +3652,38 @@ async function boot(): Promise<void> {
       void renderDetail(launch.curve);
     }
   };
-  window.addEventListener("hashchange", () => void openHashDetail());
+  // Deep link: #swap/<token-or-curve> opens Swap with that token preselected.
+  const openHashSwap = async (): Promise<void> => {
+    const h = location.hash.replace(/^#\/?/, "");
+    if (!h.startsWith("swap")) return;
+    let target: string | null = null;
+    if (h.startsWith("swap/")) target = h.slice("swap/".length);
+    let launch: EnrichedLaunch | undefined;
+    if (target) {
+      launch = state.launches.find((x) => x.token.toLowerCase() === target!.toLowerCase() || x.curve.toLowerCase() === target!.toLowerCase());
+      if (!launch) {
+        // Not in the cache (fresh browser): one bulk scan on the separate
+        // scan client finds it without touching the interactive client.
+        await refreshLaunches();
+        launch = state.launches.find((x) => x.token.toLowerCase() === target!.toLowerCase() || x.curve.toLowerCase() === target!.toLowerCase());
+      }
+    }
+    state.swapCurve = launch ? launch.curve : null;
+    showView("swap");
+    renderSwap();
+  };
+  window.addEventListener("hashchange", () => {
+    const h = location.hash.replace(/^#\/?/, "");
+    if (h.startsWith("detail/")) void openHashDetail();
+    else if (h === "swap" || h.startsWith("swap/")) void openHashSwap();
+  });
 
   // Deep links: #discover (default), #create, #profile, #detail/<curve>.
   // A leading "/" after "#" is tolerated ("#/detail/…" shared links).
   const hash = location.hash.replace(/^#\/?/, "");
   if (hash === "create") { showView("create"); void loadConfigsForForm(); ensureBackgroundStarted(); }
   else if (hash === "profile") { showView("profile"); void renderProfile(); ensureBackgroundStarted(); }
+  else if (hash === "swap" || hash.startsWith("swap/")) { await openHashSwap(); ensureBackgroundStarted(); }
   else if (hash.startsWith("detail/")) {
     // Deep link: open the detail FIRST. The heavy background jobs share
     // the rate-limited client and used to queue the detail's own reads
