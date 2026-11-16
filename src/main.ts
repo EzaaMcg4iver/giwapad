@@ -48,12 +48,12 @@ import {
   minOut,
   buildWrapTx,
   curveStatusLabel,
-  isRateLimitError,
   type Launch,
   type LaunchConfig,
   type TokenMeta,
   type CurveFull,
 } from "./ammora";
+import { friendlyErrorMessage } from "./errors";
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -90,24 +90,6 @@ function fmtAmount(raw: bigint, decimals: number, maxDp = 6): string {
 
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
-}
-
-/**
- * Short human message for an error. Raw viem dumps (request bodies, docs
- * links, JSON) are never shown to the user; a rate limit is reported as a
- * busy-RPC message, not an error dump.
- */
-function friendlyErrorMessage(err: unknown): string {
-  if (isRateLimitError(err)) return "RPC sedang sibuk, coba lagi.";
-  const raw = err instanceof Error ? err.message : String(err);
-  if (/timed out|timeout/i.test(raw)) return "RPC lambat, coba lagi.";
-  const firstLine = raw.split("\n")[0];
-  if (firstLine.length <= 140 && !/Request body|Docs:|Raw Call Arguments|Contract Call:|HTTP request failed/.test(firstLine)) {
-    return firstLine;
-  }
-  if (/HTTP request failed/.test(firstLine)) return "Gagal menghubungi RPC, coba lagi.";
-  const cut = firstLine.split("Request body:")[0].split("Docs:")[0].trim();
-  return (cut.length > 0 ? cut : "Terjadi kesalahan, coba lagi.").slice(0, 140);
 }
 
 function showError(box: HTMLElement, err: unknown): void {
@@ -190,7 +172,11 @@ async function connectWallet(): Promise<void> {
     if (state.view === "profile") void renderProfile();
     if (state.detailCurve) renderDetail(state.detailCurve);
   } catch (err) {
-    showError(box, err);
+    // A failed connect must never leave the user with only an error and no
+    // way back: re-render the normal Connect button, then show the short
+    // error above it so the user can retry immediately.
+    renderWallet();
+    box.prepend(el("div", "error", friendlyErrorMessage(err)));
   }
 }
 

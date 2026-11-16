@@ -33,6 +33,9 @@ import {
   type WalletClient,
 } from "viem";
 import { priceX128FromSqrtPriceX64 } from "@ammora-protocol/math";
+import { isRateLimitError, isUnknownChainError, providerErrorCode } from "./errors";
+
+export { isRateLimitError } from "./errors";
 import {
   giwaSepoliaAutoRouteDeployment,
   giwaSepoliaAutoRoute,
@@ -80,20 +83,6 @@ export const giwaSepolia = defineChain({
   rpcUrls: { default: { http: [RPC_URL] }, public: { http: [RPC_URL] } },
   blockExplorers: { default: { name: "GIWA Sepolia Explorer", url: EXPLORER_URL } },
 });
-
-/** True when an error is the public RPC's rate limit (HTTP 429 / JSON-RPC -32016 "over rate limit"). */
-export function isRateLimitError(err: unknown): boolean {
-  let cur: unknown = err;
-  for (let depth = 0; depth < 6 && cur != null; depth++) {
-    const e = cur as { code?: unknown; status?: unknown; statusCode?: unknown; message?: unknown; details?: unknown; shortMessage?: unknown; cause?: unknown };
-    if (e.code === -32016 || e.status === 429 || e.statusCode === 429) return true;
-    for (const field of [e.message, e.details, e.shortMessage]) {
-      if (typeof field === "string" && (field.includes("over rate limit") || field.includes("429"))) return true;
-    }
-    cur = e.cause;
-  }
-  return false;
-}
 
 /** Live counters for RPC health (rate-limit retries etc.). Diagnostics only; never sent anywhere. */
 export const rpcStats = { requests: 0, rateLimited: 0, retried: 0 };
@@ -250,29 +239,64 @@ export async function requestAccounts(): Promise<Address[]> {
   return accounts as Address[];
 }
 
+/** Params for adding GIWA Sepolia to a wallet. chainId is computed from CHAIN_ID (91342 = 0x164ce). */
+function giwaSepoliaAddParams(): Record<string, unknown> {
+  return {
+    chainId: `0x${CHAIN_ID.toString(16)}`,
+    chainName: "GIWA Sepolia",
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    rpcUrls: [RPC_URL],
+    blockExplorerUrls: [EXPLORER_URL],
+  };
+}
+
+/**
+ * Make sure the wallet is on GIWA Sepolia, adding the chain when it is
+ * missing. Flow: read the current chain first (skip everything when already
+ * correct) → try to switch → if the chain is unknown, add it, then switch
+ * again (some wallets do not auto-switch after adding). A user rejection
+ * (code 4001) at any step stops the flow with a readable Error — never a
+ * raw provider object, never a retry loop.
+ */
 export async function ensureGiwaChain(): Promise<void> {
   const eth = (window as unknown as { ethereum?: { request: (a: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
   if (!eth) throw new Error("No injected wallet found.");
+  const chainIdHex = `0x${CHAIN_ID.toString(16)}`;
+  try {
+    const current = (await eth.request({ method: "eth_chainId" })) as string;
+    if (typeof current === "string" && Number.parseInt(current, 16) === CHAIN_ID) return;
+  } catch (err) {
+    // A failed chain read must not block the connect attempt; fall through
+    // to the switch below. A rejection here is not a thing, so just continue.
+    if (providerErrorCode(err) === 4001) throw new Error("Pindah chain ditolak di dompet, coba lagi.");
+  }
   try {
     await eth.request({
       method: "wallet_switchEthereumChain",
-      params: [{ chainId: `0x${CHAIN_ID.toString(16)}` }],
+      params: [{ chainId: chainIdHex }],
     });
+    return;
   } catch (err) {
-    const e = err as { code?: number };
-    if (e?.code === 4902) {
+    if (providerErrorCode(err) === 4001) throw new Error("Pindah chain ditolak di dompet, coba lagi.");
+    if (!isUnknownChainError(err)) throw err;
+    // Chain is unknown to the wallet: add it, then switch to it.
+    try {
       await eth.request({
         method: "wallet_addEthereumChain",
-        params: [{
-          chainId: `0x${CHAIN_ID.toString(16)}`,
-          chainName: "GIWA Sepolia",
-          nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-          rpcUrls: [RPC_URL],
-          blockExplorerUrls: [EXPLORER_URL],
-        }],
+        params: [giwaSepoliaAddParams()],
       });
-    } else {
-      throw err;
+    } catch (addErr) {
+      if (providerErrorCode(addErr) === 4001) throw new Error("Pindah chain ditolak di dompet, coba lagi.");
+      throw addErr;
+    }
+    try {
+      await eth.request({
+        method: "wallet_switchEthereumChain",
+        params: [{ chainId: chainIdHex }],
+      });
+    } catch (switchErr) {
+      if (providerErrorCode(switchErr) === 4001) throw new Error("Pindah chain ditolak di dompet, coba lagi.");
+      throw switchErr;
     }
   }
 }
