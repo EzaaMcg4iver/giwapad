@@ -48,6 +48,7 @@ import {
   minOut,
   buildWrapTx,
   curveStatusLabel,
+  isRateLimitError,
   type Launch,
   type LaunchConfig,
   type TokenMeta,
@@ -91,9 +92,27 @@ function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
 
+/**
+ * Short human message for an error. Raw viem dumps (request bodies, docs
+ * links, JSON) are never shown to the user; a rate limit is reported as a
+ * busy-RPC message, not an error dump.
+ */
+function friendlyErrorMessage(err: unknown): string {
+  if (isRateLimitError(err)) return "RPC sedang sibuk, coba lagi.";
+  const raw = err instanceof Error ? err.message : String(err);
+  if (/timed out|timeout/i.test(raw)) return "RPC lambat, coba lagi.";
+  const firstLine = raw.split("\n")[0];
+  if (firstLine.length <= 140 && !/Request body|Docs:|Raw Call Arguments|Contract Call:|HTTP request failed/.test(firstLine)) {
+    return firstLine;
+  }
+  if (/HTTP request failed/.test(firstLine)) return "Gagal menghubungi RPC, coba lagi.";
+  const cut = firstLine.split("Request body:")[0].split("Docs:")[0].trim();
+  return (cut.length > 0 ? cut : "Terjadi kesalahan, coba lagi.").slice(0, 140);
+}
+
 function showError(box: HTMLElement, err: unknown): void {
   box.innerHTML = "";
-  const d = el("div", "error", `Error: ${err instanceof Error ? err.message : String(err)}`);
+  const d = el("div", "error", friendlyErrorMessage(err));
   box.appendChild(d);
 }
 
@@ -312,11 +331,45 @@ async function enrichLaunches(): Promise<void> {
       l.curveData = await getCurveFull(l.curve);
       l.price = priceFromSqrtPrice(l.curveData.state.sqrtPrice, l.meta.decimals, 18);
     } catch (err) {
-      l.loadError = err instanceof Error ? err.message : String(err);
+      l.loadError = friendlyErrorMessage(err);
     }
     renderDiscover();
     await new Promise((r) => setTimeout(r, 400));
   }
+}
+
+/**
+ * Insert a freshly created launch into the local list right away, so it
+ * shows in Discover / "My launches" / Profile without waiting for the bulk
+ * scan to reach its block (~25 min). Deduplicated by token address when the
+ * scan later finds the same launch.
+ */
+function insertOptimisticLaunch(l: {
+  token: Address; curve: Address; creator: Address; configId: bigint;
+  configHash: Hex; protocolVersion: number; metadataURI: string;
+  blockNumber: bigint; txHash: Hash; name: string; symbol: string; decimals: number;
+}): void {
+  const tokenKey = l.token.toLowerCase();
+  const curveKey = l.curve.toLowerCase();
+  if (state.launches.some((x) => x.token.toLowerCase() === tokenKey || x.curve.toLowerCase() === curveKey)) return;
+  const launch: EnrichedLaunch = {
+    token: l.token,
+    curve: l.curve,
+    creator: l.creator,
+    configId: l.configId,
+    configHash: l.configHash,
+    protocolVersion: l.protocolVersion,
+    metadataURI: l.metadataURI,
+    blockNumber: l.blockNumber,
+    txHash: l.txHash,
+    meta: { address: l.token, name: l.name, symbol: l.symbol, decimals: l.decimals },
+  };
+  state.launches = [...state.launches, launch].sort((a, b) => Number(b.blockNumber - a.blockNumber));
+  // Persist the launch but keep the scan's own progress marker, so the scan
+  // does not skip blocks it has not reached yet.
+  const cache = loadLaunchCache();
+  saveLaunchCache(state.launches, cache.scannedTo);
+  renderDiscover();
 }
 
 async function refreshLaunches(): Promise<void> {
@@ -333,10 +386,13 @@ async function refreshLaunches(): Promise<void> {
       $("#launch-count").textContent = `${state.launches.length} launches · ${state.scanStatus}`;
     });
     const byCurve = new Map(state.launches.map((l) => [l.curve.toLowerCase(), l]));
+    const byToken = new Set(state.launches.map((l) => l.token.toLowerCase()));
     for (const l of [...cache.launches, ...found]) {
-      if (!byCurve.has(l.curve.toLowerCase())) {
-        byCurve.set(l.curve.toLowerCase(), l);
-      }
+      // Dedupe by curve AND by token: an optimistically inserted launch
+      // must not appear twice once the scan rediscovers it.
+      if (byCurve.has(l.curve.toLowerCase()) || byToken.has(l.token.toLowerCase())) continue;
+      byCurve.set(l.curve.toLowerCase(), l);
+      byToken.add(l.token.toLowerCase());
     }
     state.launches = [...byCurve.values()].sort((a, b) => Number(b.blockNumber - a.blockNumber));
     saveLaunchCache(state.launches, latest);
@@ -482,7 +538,7 @@ async function renderProfile(): Promise<void> {
       balBox.appendChild(r);
     }
   } catch (err) {
-    balBox.textContent = `Could not load balances: ${err instanceof Error ? err.message : String(err)}`;
+    balBox.textContent = `Could not load balances: ${friendlyErrorMessage(err)}`;
   }
 
   // Enrich my launches (meta + curve state) if not loaded yet.
@@ -493,7 +549,7 @@ async function renderProfile(): Promise<void> {
       l.curveData = await getCurveFull(l.curve);
       l.price = priceFromSqrtPrice(l.curveData.state.sqrtPrice, l.meta.decimals, 18);
     } catch (err) {
-      l.loadError = err instanceof Error ? err.message : String(err);
+      l.loadError = friendlyErrorMessage(err);
     }
     if (!stillHere()) return;
   }
@@ -526,7 +582,7 @@ async function renderProfile(): Promise<void> {
       }
     }
   } catch (err) {
-    holdBox.textContent = `Could not load holdings: ${err instanceof Error ? err.message : String(err)}`;
+    holdBox.textContent = `Could not load holdings: ${friendlyErrorMessage(err)}`;
   }
 
   if (mine.length === 0 && state.holdings.size === 0) {
@@ -600,7 +656,7 @@ function tradePanel(l: EnrichedLaunch): HTMLElement {
         quoteBox.appendChild(el("div", "", `Fill: ${esc(q.fillKind)}${q.amountLeft > 0n ? ` · unfilled ${fmtAmount(q.amountLeft, decimals)}` : ""}`));
         execBtn.textContent = "Preview & execute";
       } catch (err) {
-        quoteBox.textContent = `Quote failed: ${err instanceof Error ? err.message : String(err)}`;
+        quoteBox.textContent = `Quote failed: ${friendlyErrorMessage(err)}`;
       }
     }
     amountInput.oninput = () => void updateQuote();
@@ -806,7 +862,7 @@ function poolTradePanel(l: EnrichedLaunch, pool: Address): HTMLElement {
         execBtn.textContent = "Preview & execute";
       }
     } catch (err) {
-      quoteBox.textContent = `Quote failed: ${err instanceof Error ? err.message : String(err)}`;
+      quoteBox.textContent = `Quote failed: ${friendlyErrorMessage(err)}`;
     }
   }
   amountInput.oninput = () => void updateQuote();
@@ -903,7 +959,7 @@ async function renderDetail(curve: string): Promise<void> {
       launch.curveData = await getCurveFull(launch.curve);
       launch.price = priceFromSqrtPrice(launch.curveData.state.sqrtPrice, launch.meta.decimals, 18);
     } catch (err) {
-      view.appendChild(el("div", "error", `Failed to load: ${err instanceof Error ? err.message : String(err)}`));
+      view.appendChild(el("div", "error", `Failed to load: ${friendlyErrorMessage(err)}`));
       return;
     }
   }
@@ -969,7 +1025,7 @@ async function renderDetail(curve: string): Promise<void> {
         balBox.appendChild(r);
       }
     } catch (err) {
-      balBox.appendChild(el("div", "error", `Could not load balances: ${err instanceof Error ? err.message : String(err)}`));
+      balBox.appendChild(el("div", "error", `Could not load balances: ${friendlyErrorMessage(err)}`));
     }
     view.appendChild(balBox);
   }
@@ -1067,6 +1123,7 @@ async function handleCreate(): Promise<void> {
   const resultBox = $("#create-result");
   resultBox.innerHTML = "";
   if (!state.account) { resultBox.appendChild(el("div", "error", "Connect a wallet first.")); return; }
+  const account = state.account;
   const c = selectedConfig();
   if (!c) { resultBox.appendChild(el("div", "error", "Pick a config first.")); return; }
   const name = ($("#create-name") as HTMLInputElement).value.trim();
@@ -1093,10 +1150,28 @@ async function handleCreate(): Promise<void> {
         const hash = await sendTx(preview.transaction);
         resultBox.appendChild(el("div", "muted", `Tx sent: ${shortAddr(hash)} — waiting for confirmation…`));
         const created = await waitForLaunchCreated(hash, c.configId, c.configHash);
+        // Show the new launch immediately — do NOT wait for the bulk scan
+        // to reach its block before it becomes visible.
+        insertOptimisticLaunch({
+          token: created.token,
+          curve: created.curve,
+          creator: account,
+          configId: created.configId,
+          configHash: created.configHash,
+          protocolVersion: created.protocolVersion,
+          metadataURI: created.metadataURI,
+          blockNumber: created.blockNumber,
+          txHash: hash,
+          name,
+          symbol,
+          decimals: c.config.tokenDecimals,
+        });
         resultBox.appendChild(el("div", "ok", `Launch created! Token ${shortAddr(created.token)} · Curve ${shortAddr(created.curve)}`));
         const openBtn = el("button", "btn", "Open launch") as HTMLButtonElement;
-        openBtn.onclick = async () => {
-          await refreshLaunches();
+        openBtn.onclick = () => {
+          // Navigate straight to the detail view from the known addresses —
+          // the old code awaited the full ~25-min scan first, so the button
+          // appeared to do nothing.
           state.detailCurve = created.curve;
           showView("detail");
           void renderDetail(created.curve);
@@ -1121,6 +1196,31 @@ function showView(name: "discover" | "create" | "detail" | "profile"): void {
   }
   for (const t of ["discover", "create", "profile"] as const) {
     $(`#tab-${t}`).classList.toggle("active", t === name);
+  }
+}
+
+async function verifyChainStatus(): Promise<void> {
+  const statusEl = $("#chain-status");
+  statusEl.innerHTML = "";
+  statusEl.textContent = "Memuat data chain…";
+  try {
+    const v = await verifyCore();
+    state.verifiedBlock = v.blockNumber;
+    statusEl.innerHTML = "";
+    statusEl.appendChild(el("span", "ok", `Core verified at block ${v.blockNumber.toString()}`));
+    statusEl.appendChild(el("span", "muted", " · Factory "));
+    statusEl.appendChild(explorerLink(v.factory));
+    statusEl.appendChild(el("span", "muted", " · Registry "));
+    statusEl.appendChild(explorerLink(v.registry));
+  } catch (err) {
+    // A failed verify must not blank the UI or block anything else:
+    // configs and the launch list load independently. Short message plus a
+    // retry — never a raw viem dump.
+    statusEl.innerHTML = "";
+    statusEl.appendChild(el("span", "error", friendlyErrorMessage(err)));
+    const retry = el("button", "btn", "↻ Retry") as HTMLButtonElement;
+    retry.onclick = () => void verifyChainStatus();
+    statusEl.appendChild(retry);
   }
 }
 
@@ -1162,21 +1262,9 @@ async function boot(): Promise<void> {
   if (hash === "create") { showView("create"); void loadConfigsForForm(); }
   else if (hash === "profile") { showView("profile"); void renderProfile(); }
 
-  // Chain status
-  const statusEl = $("#chain-status");
-  try {
-    statusEl.textContent = "Verifying Ammora core contracts…";
-    const v = await verifyCore();
-    state.verifiedBlock = v.blockNumber;
-    statusEl.innerHTML = "";
-    statusEl.appendChild(el("span", "ok", `Core verified at block ${v.blockNumber.toString()}`));
-    statusEl.appendChild(el("span", "muted", " · Factory "));
-    statusEl.appendChild(explorerLink(v.factory));
-    statusEl.appendChild(el("span", "muted", " · Registry "));
-    statusEl.appendChild(explorerLink(v.registry));
-  } catch (err) {
-    showError(statusEl, err);
-  }
+  // Chain status — fire and forget: a slow or failed verify must never
+  // delay or block the configs and the launch scan.
+  void verifyChainStatus();
 
   // Then refresh from chain.
   await refreshLaunches();

@@ -81,6 +81,27 @@ export const giwaSepolia = defineChain({
   blockExplorers: { default: { name: "GIWA Sepolia Explorer", url: EXPLORER_URL } },
 });
 
+/** True when an error is the public RPC's rate limit (HTTP 429 / JSON-RPC -32016 "over rate limit"). */
+export function isRateLimitError(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let depth = 0; depth < 6 && cur != null; depth++) {
+    const e = cur as { code?: unknown; status?: unknown; statusCode?: unknown; message?: unknown; details?: unknown; shortMessage?: unknown; cause?: unknown };
+    if (e.code === -32016 || e.status === 429 || e.statusCode === 429) return true;
+    for (const field of [e.message, e.details, e.shortMessage]) {
+      if (typeof field === "string" && (field.includes("over rate limit") || field.includes("429"))) return true;
+    }
+    cur = e.cause;
+  }
+  return false;
+}
+
+/** Live counters for RPC health (rate-limit retries etc.). Diagnostics only; never sent anywhere. */
+export const rpcStats = { requests: 0, rateLimited: 0, retried: 0 };
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Serialize public RPC calls, mirroring the examples' paced transport. */
 export function pacedHttp(url: string, intervalMs = 600): Transport {
   let tail: Promise<unknown> = Promise.resolve();
@@ -94,7 +115,21 @@ export function pacedHttp(url: string, intervalMs = 600): Transport {
             setTimeout(resolve, Math.max(0, nextStart - Date.now())),
           );
           try {
-            return await base.request(args);
+            // Retry a rate limit with backoff instead of killing the scan.
+            for (let attempt = 0; ; attempt++) {
+              rpcStats.requests++;
+              try {
+                return await base.request(args);
+              } catch (err) {
+                if (isRateLimitError(err) && attempt < 4) {
+                  rpcStats.rateLimited++;
+                  rpcStats.retried++;
+                  await sleep(500 * 2 ** attempt);
+                  continue;
+                }
+                throw err;
+              }
+            }
           } finally {
             nextStart = Date.now() + intervalMs;
           }
@@ -106,17 +141,80 @@ export function pacedHttp(url: string, intervalMs = 600): Transport {
   };
 }
 
+/**
+ * Rate-limited transport for interactive reads (configs, quotes, balances,
+ * curve state). The public GIWA RPC answers bursts with HTTP 429 / -32016
+ * "over rate limit", so interactive reads are capped at 2 in flight with a
+ * ~200 ms gap between calls, and a rate limit is retried with exponential
+ * backoff (500 ms → 1 s → 2 s → 4 s, up to 4 attempts) instead of surfacing
+ * a raw error to the user.
+ */
+export function limitedHttp(
+  url: string,
+  opts: { maxConcurrent?: number; minGapMs?: number; maxRetries?: number } = {},
+): Transport {
+  const maxConcurrent = opts.maxConcurrent ?? 2;
+  const minGapMs = opts.minGapMs ?? 200;
+  const maxRetries = opts.maxRetries ?? 4;
+  let inFlight = 0;
+  let nextStart = 0;
+  const waiters: Array<() => void> = [];
+  const acquire = async (): Promise<void> => {
+    if (inFlight < maxConcurrent) { inFlight++; return; }
+    await new Promise<void>((resolve) => waiters.push(resolve));
+    // Slot transferred by release(); inFlight unchanged.
+  };
+  const release = (): void => {
+    const next = waiters.shift();
+    if (next) { next(); return; }
+    inFlight--;
+  };
+  return (parameters) => {
+    const base = http(url, { retryCount: 0 })(parameters);
+    return custom({
+      request: async (args) => {
+        let lastErr: unknown = new Error("RPC request failed");
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+          await acquire();
+          let rateLimited = false;
+          try {
+            const wait = nextStart - Date.now();
+            if (wait > 0) await sleep(wait);
+            nextStart = Date.now() + minGapMs;
+            rpcStats.requests++;
+            return await base.request(args);
+          } catch (err) {
+            lastErr = err;
+            if (attempt < maxRetries - 1 && isRateLimitError(err)) {
+              rpcStats.rateLimited++;
+              rpcStats.retried++;
+              rateLimited = true;
+            } else {
+              throw err;
+            }
+          } finally {
+            release();
+          }
+          if (rateLimited) await sleep(500 * 2 ** attempt);
+        }
+        throw lastErr;
+      },
+    }, { retryCount: 0 })(parameters);
+  };
+}
+
 let publicClient: PublicClient | null = null;
 /**
  * Default client for interactive reads (configs, quotes, balances, curve
- * state). Plain HTTP, no pacing: these are user-triggered and must not wait
- * behind the bulk launch scan.
+ * state). Rate-limited (2 in flight, ~200 ms gap, retry on 429) so a burst
+ * of user-triggered reads never trips the public RPC — and so these reads
+ * never wait behind the bulk launch scan.
  */
 export function getPublicClient(): PublicClient {
   if (!publicClient) {
     publicClient = createPublicClient({
       chain: giwaSepolia,
-      transport: http(RPC_URL, { retryCount: 1 }),
+      transport: limitedHttp(RPC_URL, { maxConcurrent: 2, minGapMs: 200, maxRetries: 4 }),
     }) as PublicClient;
   }
   return publicClient;
@@ -448,14 +546,23 @@ export async function waitForLaunchCreated(
   hash: Hash,
   expectedConfigId: bigint,
   expectedConfigHash: Hex,
-): Promise<{ token: Address; curve: Address }> {
+): Promise<{ token: Address; curve: Address; creator: Address; configId: bigint; configHash: Hex; protocolVersion: number; metadataURI: string; blockNumber: bigint }> {
   const client = getPublicClient();
   const full = await client.getTransactionReceipt({ hash });
   const created = parseAmmoraV4LaunchCreatedReceipt(full, FACTORY);
   if (created.configId !== expectedConfigId || created.configHash.toLowerCase() !== expectedConfigHash.toLowerCase()) {
     throw new Error("Launch receipt does not match the selected Config — do not trust this result.");
   }
-  return { token: created.token, curve: created.curve };
+  return {
+    token: created.token,
+    curve: created.curve,
+    creator: created.creator,
+    configId: created.configId,
+    configHash: created.configHash,
+    protocolVersion: created.protocolVersion,
+    metadataURI: created.metadataURI,
+    blockNumber: created.receiptBlockNumber,
+  };
 }
 
 export async function waitForSwapReceipt(
