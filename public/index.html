@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GiwaPad — Token Launchpad on GIWA Sepolia</title>
+<link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">🌊</span>
+    <div>
+      <div class="brand-name">GiwaPad</div>
+      <div class="brand-sub">Token launchpad · GIWA Sepolia testnet</div>
+    </div>
+  </div>
+  <nav class="tabs">
+    <button id="tab-discover" class="tab active">Discover</button>
+    <button id="tab-create" class="tab">Create Launch</button>
+  </nav>
+  <div id="wallet-status" class="wallet"></div>
+</header>
+
+<main>
+  <div id="chain-status" class="statusbar muted">Connecting to GIWA Sepolia…</div>
+
+  <section id="view-discover">
+    <div class="toolbar">
+      <input id="search-input" type="search" placeholder="Search name, symbol, or address…" />
+      <div class="filters">
+        <button id="filter-all" class="btn chip active">All</button>
+        <button id="filter-active" class="btn chip">Active</button>
+        <button id="filter-near" class="btn chip">Near graduation</button>
+        <button id="filter-graduated" class="btn chip">Graduated</button>
+        <button id="filter-mine" class="btn chip">My launches</button>
+      </div>
+      <button id="refresh-btn" class="btn">↻ Refresh</button>
+    </div>
+    <div id="launch-count" class="muted count"></div>
+    <div id="scan-status" class="muted count"></div>
+    <div id="launch-grid" class="grid"></div>
+  </section>
+
+  <section id="view-create" class="hidden">
+    <h2>Create a launch</h2>
+    <p class="muted">Pick a reviewed Ammora V4 config, name your token, and create it on GIWA Sepolia testnet. You will review the exact transaction in your wallet before anything is sent.</p>
+    <div class="form">
+      <label>Launch config
+        <select id="create-config"></select>
+      </label>
+      <div id="config-info" class="panel muted"></div>
+      <label>Token name
+        <input id="create-name" type="text" placeholder="e.g. Giwa Cat" maxlength="64" />
+      </label>
+      <label>Token symbol
+        <input id="create-symbol" type="text" placeholder="e.g. GCAT" maxlength="10" />
+      </label>
+      <label>Token decimals (fixed by config)
+        <input id="create-decimals" type="number" readonly />
+      </label>
+      <label>Metadata URI (optional)
+        <input id="create-metadata" type="text" placeholder="https://… or ipfs://…" />
+      </label>
+      <button id="create-submit" class="btn primary">Preview launch</button>
+      <div id="create-result" class="result"></div>
+    </div>
+  </section>
+
+  <section id="view-detail" class="hidden"></section>
+</main>
+
+<footer class="footer muted">
+  Built with <code>@ammora-protocol/sdk 0.3.9</code> on GIWA Sepolia (chain 91342) · Testnet only — no real funds ·
+  All numbers come from live chain reads · Never enter a seed phrase or private key anywhere.
+</footer>
+
+<script src="./bundle.js"></script>
+</body>
+</html>
