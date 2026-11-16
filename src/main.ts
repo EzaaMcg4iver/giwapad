@@ -35,6 +35,7 @@ import {
   curveClient,
   getCurveFull,
   priceFromSqrtPrice,
+  scanCurveChart,
   quoteCurve,
   planCurveSwap,
   buildApproveTx,
@@ -52,8 +53,21 @@ import {
   type LaunchConfig,
   type TokenMeta,
   type CurveFull,
+  type ChartData,
 } from "./ammora";
 import { friendlyErrorMessage } from "./errors";
+import { ICON_COPY, ICON_EXTERNAL_LINK } from "./icons";
+import { initTheme, toggleTheme } from "./theme";
+import {
+  buildChartSvg,
+  CHART_CACHE_TTL_MS,
+  CHART_HEIGHT,
+  CHART_RANGES,
+  filterPointsByRange,
+  formatPercentChange,
+  formatPriceShort,
+  type ChartRange,
+} from "./chart";
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -205,7 +219,7 @@ function renderWallet(): void {
   box.appendChild(addr);
   box.appendChild(el("span", "muted", `ETH ${fmtAmount(state.ethBalance, 18, 4)}`));
   box.appendChild(el("span", "muted", `WETH ${fmtAmount(state.wethBalance, 18, 4)}`));
-  const dc = el("button", "btn", "Disconnect") as HTMLButtonElement;
+  const dc = el("button", "btn text", "Disconnect") as HTMLButtonElement;
   dc.onclick = () => {
     state.account = null;
     state.ethBalance = 0n;
@@ -257,7 +271,13 @@ function filteredLaunches(): EnrichedLaunch[] {
 
 function launchCard(l: EnrichedLaunch): HTMLElement {
   const card = el("div", "card");
-  card.onclick = () => { state.detailCurve = l.curve; showView("detail"); void renderDetail(l.curve); };
+  card.tabIndex = 0;
+  card.setAttribute("role", "button");
+  const openDetail = () => { state.detailCurve = l.curve; showView("detail"); void renderDetail(l.curve); };
+  card.onclick = openDetail;
+  card.onkeydown = (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDetail(); }
+  };
   const head = el("div", "card-head");
   head.appendChild(el("div", "card-title", l.meta ? `${l.meta.name} (${l.meta.symbol})` : shortAddr(l.token)));
   head.appendChild(el("span", `badge status-${l.curveData?.state.status ?? -1}`, l.curveData ? curveStatusLabel(l.curveData.state.status) : "Loading…"));
@@ -462,9 +482,11 @@ async function renderProfile(): Promise<void> {
   addrRow.appendChild(addrVal);
   idPanel.appendChild(addrRow);
   const actions = el("div", "seg");
-  const copyBtn = el("button", "btn", "Copy address") as HTMLButtonElement;
+  const copyBtn = el("button", "btn", "") as HTMLButtonElement;
+  const resetCopyLabel = (): void => { copyBtn.innerHTML = `${ICON_COPY}<span>Salin alamat</span>`; };
+  resetCopyLabel();
   copyBtn.onclick = async () => {
-    const done = () => { copyBtn.textContent = "Copied ✓"; setTimeout(() => { copyBtn.textContent = "Copy address"; }, 2000); };
+    const done = () => { copyBtn.textContent = "Disalin ✓"; setTimeout(resetCopyLabel, 2000); };
     try {
       await navigator.clipboard.writeText(account);
       done();
@@ -473,13 +495,14 @@ async function renderProfile(): Promise<void> {
       ta.value = account;
       document.body.appendChild(ta);
       ta.select();
-      try { document.execCommand("copy"); done(); } catch { copyBtn.textContent = "Copy failed"; }
+      try { document.execCommand("copy"); done(); } catch { copyBtn.textContent = "Gagal menyalin"; }
       document.body.removeChild(ta);
     }
   };
   actions.appendChild(copyBtn);
-  const expLink = explorerLink(account, "View on explorer");
+  const expLink = explorerLink(account, "Lihat di explorer");
   expLink.className = "btn";
+  expLink.insertAdjacentHTML("afterbegin", ICON_EXTERNAL_LINK);
   actions.appendChild(expLink);
   idPanel.appendChild(actions);
   const balBox = el("div", "muted", "Loading balances…");
@@ -574,6 +597,95 @@ async function renderProfile(): Promise<void> {
   if (mine.length === 0 && state.holdings.size === 0) {
     view.appendChild(el("div", "empty", "Kamu belum punya launch dan belum memegang token apa pun dari launch yang dikenal di GiwaPad."));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Price chart (detail view) — custom SVG, no chart library, no new deps.
+// Data comes from real on-chain Swap events (see scanCurveChart).
+// Drawing and range logic live in ./chart.ts; this panel only wires it up.
+// ---------------------------------------------------------------------------
+
+let chartRange: ChartRange = "all";
+const chartCache = new Map<string, { at: number; data: ChartData }>();
+
+function chartPanel(l: EnrichedLaunch): HTMLElement {
+  const wrap = el("div", "panel chart-panel");
+  wrap.appendChild(el("h3", "", "Price chart"));
+  const segRow = el("div", "seg");
+  const rangeBtns = new Map<ChartRange, HTMLButtonElement>();
+  for (const { range: r, label } of CHART_RANGES) {
+    const b = el("button", `btn seg-btn${chartRange === r ? " active" : ""}`, label) as HTMLButtonElement;
+    b.onclick = () => {
+      chartRange = r;
+      for (const [rr, bb] of rangeBtns) bb.classList.toggle("active", rr === r);
+      void loadChart();
+    };
+    rangeBtns.set(r, b);
+    segRow.appendChild(b);
+  }
+  wrap.appendChild(segRow);
+  const statsBox = el("div", "chart-stats");
+  wrap.appendChild(statsBox);
+  const body = el("div", "chart-body");
+  const chartSkeleton = el("div", "skeleton");
+  chartSkeleton.style.height = `${CHART_HEIGHT}px`;
+  body.appendChild(chartSkeleton);
+  body.appendChild(el("div", "muted", "Memuat grafik…"));
+  wrap.appendChild(body);
+
+  async function loadChart(): Promise<void> {
+    const key = l.curve.toLowerCase();
+    try {
+      const cached = chartCache.get(key);
+      let data = cached && Date.now() - cached.at < CHART_CACHE_TTL_MS ? cached.data : null;
+      if (!data) {
+        data = await scanCurveChart(l.curve, l.blockNumber, l.meta!.decimals, l.price ?? "0");
+        chartCache.set(key, { at: Date.now(), data });
+      }
+      const pts = filterPointsByRange(data, chartRange);
+      statsBox.innerHTML = "";
+      body.innerHTML = "";
+      if (data.trades === 0) {
+        body.appendChild(el("div", "muted", "Belum ada trade — harga masih harga awal."));
+      } else if (data.truncated) {
+        body.appendChild(el("div", "muted", "Menampilkan 1,2 jt blok terakhir."));
+      }
+      if (pts.length === 0) {
+        body.appendChild(el("div", "muted", "Tidak ada trade pada rentang ini."));
+        return;
+      }
+      const prices = pts.map((p) => p.price);
+      const first = prices[0];
+      const last = prices[prices.length - 1];
+      const low = Math.min(...prices);
+      const high = Math.max(...prices);
+      const change = first > 0 ? ((last - first) / first) * 100 : 0;
+      const stats: Array<[string, string, string?]> = [
+        ["Harga sekarang", `${formatPriceShort(last)} WETH`],
+        ["Terendah", formatPriceShort(low)],
+        ["Tertinggi", formatPriceShort(high)],
+        ["Perubahan", formatPercentChange(change), change >= 0 ? "chart-up" : "chart-down"],
+      ];
+      for (const [k, v, cls] of stats) {
+        const s = el("div", "chart-stat");
+        s.appendChild(el("div", "chart-stat-k", k));
+        s.appendChild(el("div", `chart-stat-v${cls ? " " + cls : ""}`, v));
+        statsBox.appendChild(s);
+      }
+      body.appendChild(buildChartSvg(pts));
+      body.appendChild(el("div", "muted chart-note",
+        `${data.trades} trade · dari blok ${data.launchBlock.toString()} · harga dari event Swap di chain`));
+    } catch (err) {
+      statsBox.innerHTML = "";
+      body.innerHTML = "";
+      body.appendChild(el("div", "error", friendlyErrorMessage(err)));
+      const retry = el("button", "btn", "↻ Retry") as HTMLButtonElement;
+      retry.onclick = () => void loadChart();
+      body.appendChild(retry);
+    }
+  }
+  void loadChart();
+  return wrap;
 }
 
 // ---------------------------------------------------------------------------
@@ -729,6 +841,12 @@ function tradePanel(l: EnrichedLaunch): HTMLElement {
         l.curveData = fresh;
         l.price = priceFromSqrtPrice(fresh.state.sqrtPrice, l.meta!.decimals, 18);
         renderDiscover();
+        // The trade moved the price: drop the cached chart and rebuild just
+        // the chart panel, so it shows the new point — without wiping the
+        // "Swap confirmed" message and the trade form above.
+        chartCache.delete(l.curve.toLowerCase());
+        const oldChart = document.querySelector(".chart-panel");
+        if (oldChart) oldChart.replaceWith(chartPanel(l));
       } catch (err) {
         showError(resultBox, err);
         execBtn.disabled = false;
@@ -926,6 +1044,9 @@ function poolTradePanel(l: EnrichedLaunch, pool: Address): HTMLElement {
   return wrap;
 }
 
+// Placeholder height (px) for the loading skeleton on the detail view.
+const DETAIL_SKELETON_HEIGHT_PX = 160;
+
 async function renderDetail(curve: string): Promise<void> {
   const view = $("#view-detail");
   view.innerHTML = "";
@@ -934,20 +1055,28 @@ async function renderDetail(curve: string): Promise<void> {
     view.appendChild(el("div", "error", "Launch not found."));
     return;
   }
+  try { history.replaceState(null, "", `#detail/${curve}`); } catch { /* non-fatal */ }
   const back = el("button", "btn", "← Back to Discover") as HTMLButtonElement;
-  back.onclick = () => showView("discover");
+  back.onclick = () => { try { history.replaceState(null, "", "#discover"); } catch { /* non-fatal */ } showView("discover"); };
   view.appendChild(back);
 
   if (!launch.meta || !launch.curveData) {
-    view.appendChild(el("div", "muted", "Loading launch data from chain…"));
+    const loadingBox = el("div", "");
+    const loadingSkeleton = el("div", "skeleton");
+    loadingSkeleton.style.height = `${DETAIL_SKELETON_HEIGHT_PX}px`;
+    loadingBox.appendChild(loadingSkeleton);
+    loadingBox.appendChild(el("div", "muted", "Loading launch data from chain…"));
+    view.appendChild(loadingBox);
     try {
       launch.meta = await getTokenMeta(launch.token);
       launch.curveData = await getCurveFull(launch.curve);
       launch.price = priceFromSqrtPrice(launch.curveData.state.sqrtPrice, launch.meta.decimals, 18);
     } catch (err) {
+      loadingBox.remove();
       view.appendChild(el("div", "error", `Failed to load: ${friendlyErrorMessage(err)}`));
       return;
     }
+    loadingBox.remove();
   }
   const l = launch;
   const meta = l.meta!;
@@ -989,6 +1118,8 @@ async function renderDetail(curve: string): Promise<void> {
   bar.appendChild(fill);
   info.appendChild(bar);
   view.appendChild(info);
+
+  view.appendChild(chartPanel(l));
 
   if (state.account) {
     const balBox = el("div", "panel");
@@ -1175,6 +1306,10 @@ async function handleCreate(): Promise<void> {
 // Views / boot
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Theme (light/dark) + deep links
+// ---------------------------------------------------------------------------
+
 function showView(name: "discover" | "create" | "detail" | "profile"): void {
   state.view = name;
   for (const v of ["discover", "create", "detail", "profile"] as const) {
@@ -1213,10 +1348,13 @@ async function verifyChainStatus(): Promise<void> {
 async function boot(): Promise<void> {
   renderWallet();
   showView("discover");
+  initTheme();
+  const themeBtn = $("#theme-toggle") as HTMLButtonElement;
+  themeBtn.onclick = () => toggleTheme();
 
-  $("#tab-discover").onclick = () => { showView("discover"); renderDiscover(); };
-  $("#tab-create").onclick = () => { showView("create"); void loadConfigsForForm(); };
-  $("#tab-profile").onclick = () => { showView("profile"); void renderProfile(); };
+  $("#tab-discover").onclick = () => { try { history.replaceState(null, "", "#discover"); } catch { /* non-fatal */ } showView("discover"); renderDiscover(); };
+  $("#tab-create").onclick = () => { try { history.replaceState(null, "", "#create"); } catch { /* non-fatal */ } showView("create"); void loadConfigsForForm(); };
+  $("#tab-profile").onclick = () => { try { history.replaceState(null, "", "#profile"); } catch { /* non-fatal */ } showView("profile"); void renderProfile(); };
   $("#refresh-btn").onclick = () => void refreshLaunches();
   $("#search-input").oninput = (e) => { state.search = (e.target as HTMLInputElement).value; renderDiscover(); };
   for (const f of ["all", "active", "near", "graduated", "mine"] as const) {
@@ -1254,6 +1392,21 @@ async function boot(): Promise<void> {
 
   // Then refresh from chain.
   await refreshLaunches();
+
+  // Deep link: #detail/<curve> opens a launch directly (shareable links).
+  const openHashDetail = (): void => {
+    const h = location.hash;
+    if (!h.startsWith("#detail/")) return;
+    const curve = h.slice("#detail/".length);
+    const launch = state.launches.find((x) => x.curve.toLowerCase() === curve.toLowerCase());
+    if (launch) {
+      state.detailCurve = launch.curve;
+      showView("detail");
+      void renderDetail(launch.curve);
+    }
+  };
+  openHashDetail();
+  window.addEventListener("hashchange", openHashDetail);
 }
 
 document.addEventListener("DOMContentLoaded", () => void boot());

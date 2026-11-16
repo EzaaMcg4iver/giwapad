@@ -432,6 +432,111 @@ const ERC20_META_ABI = [
   parseAbiItem("function allowance(address,address) view returns (uint256)"),
 ] as const;
 
+// ---------------------------------------------------------------------------
+// Price history (chart)
+// ---------------------------------------------------------------------------
+
+const CURVE_SWAP_EVENT = parseAbiItem(
+  "event Swap(address indexed trader, bool indexed baseForQuote, bool exactInput, uint256 amountIn, uint256 amountOut, uint256 fee, uint256 amountLeft, uint128 nextSqrtPrice, address recipient)",
+);
+const CURVE_SWAP_TOPIC = toEventSelector(CURVE_SWAP_EVENT);
+
+/** One price point: WETH per whole token (JS number) at a block + wall time. */
+export interface ChartPoint {
+  block: bigint;
+  timeMs: number;
+  price: number;
+}
+
+export interface ChartData {
+  curve: Address;
+  points: ChartPoint[];
+  trades: number;
+  truncated: boolean;
+  fromBlock: bigint;
+  toBlock: bigint;
+  launchBlock: bigint;
+}
+
+/**
+ * Longest history the chart ever scans (1.2M blocks ≈ 3 weeks at ~1.5 s/block).
+ * Older launches show the most recent 1.2M blocks and say so (truncated).
+ */
+const CHART_MAX_SPAN = 1_200_000n;
+
+/**
+ * Price history for a curve, from REAL on-chain Swap events (the SDK's
+ * ammoraLaunchPoolV4Abi Swap event). Each Swap log carries nextSqrtPrice —
+ * the price right after that trade — converted with the same helper the
+ * detail view uses. The series starts with the true starting price (curve
+ * state read at the launch block) and ends with the current price. Block
+ * timestamps are interpolated between two real block headers (first and
+ * last block of the range), so the time axis is honest without one RPC
+ * call per point. Runs on the rate-limited interactive client (never the
+ * bulk scan client) with 10,000-block windows (the public RPC's log cap).
+ */
+export async function scanCurveChart(
+  curve: Address,
+  launchBlock: bigint,
+  baseDecimals: number,
+  currentPrice: string,
+): Promise<ChartData> {
+  const client = getPublicClient();
+  const latest = await client.getBlockNumber();
+  const truncated = latest - launchBlock > CHART_MAX_SPAN;
+  const fromBlock = truncated ? latest - CHART_MAX_SPAN : launchBlock;
+  const logs = await scanAmmoraLogs({
+    clients: [client],
+    fromBlock,
+    toBlock: latest,
+    addresses: [curve],
+    initialWindow: 5000n,
+    minimumWindow: 100n,
+    maximumWindow: 10000n,
+    retriesPerClient: 2,
+  });
+  const trades: Array<{ block: bigint; price: number }> = [];
+  for (const log of logs) {
+    if (log.topics[0]?.toLowerCase() !== CURVE_SWAP_TOPIC.toLowerCase()) continue;
+    if (log.blockNumber == null) continue;
+    try {
+      const decoded = decodeEventLog({ abi: [CURVE_SWAP_EVENT], data: log.data, topics: log.topics as [Hex, ...Hex[]] });
+      trades.push({ block: log.blockNumber, price: Number.parseFloat(priceFromSqrtPrice(decoded.args.nextSqrtPrice, baseDecimals, 18)) });
+    } catch { /* not a Swap-shaped log — ignore */ }
+  }
+  trades.sort((a, b) => Number(a.block - b.block));
+
+  // Two real block headers; everything between is linear interpolation.
+  const [firstHeader, lastHeader] = await Promise.all([
+    client.getBlock({ blockNumber: fromBlock }),
+    client.getBlock({ blockNumber: latest }),
+  ]);
+  const t0 = Number(firstHeader.timestamp) * 1000;
+  const t1 = Number(lastHeader.timestamp) * 1000;
+  const spanBlocks = Number(latest - fromBlock);
+  const timeAt = (block: bigint): number =>
+    spanBlocks <= 0 ? t0 : t0 + (Number(block - fromBlock) / spanBlocks) * (t1 - t0);
+
+  // True starting price: curve state at the launch block, before any trade
+  // could move it. Falls back to the first trade's price, then the current
+  // price — never invented.
+  let startPrice = Number.parseFloat(currentPrice);
+  try {
+    const atLaunch = await curveClient(curve).getStateAtBlock(launchBlock);
+    startPrice = Number.parseFloat(priceFromSqrtPrice(atLaunch.sqrtPrice, baseDecimals, 18));
+  } catch {
+    if (trades.length > 0) startPrice = trades[0].price;
+  }
+
+  const points: ChartPoint[] = [];
+  points.push({ block: launchBlock, timeMs: timeAt(launchBlock), price: startPrice });
+  for (const t of trades) points.push({ block: t.block, timeMs: timeAt(t.block), price: t.price });
+  points.push({ block: latest, timeMs: t1, price: Number.parseFloat(currentPrice) });
+  points.sort((a, b) => a.timeMs - b.timeMs || Number(a.block - b.block));
+  const deduped = points.filter((p, i) => i === 0 || p.block !== points[i - 1].block || p.price !== points[i - 1].price);
+  return { curve, points: deduped, trades: trades.length, truncated, fromBlock, toBlock: latest, launchBlock };
+}
+
 export async function getTokenMeta(token: Address): Promise<TokenMeta> {
   const client = getPublicClient();
   const [name, symbol, decimals] = await Promise.all([
