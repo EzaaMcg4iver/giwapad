@@ -54,6 +54,7 @@ import {
   minOutFromSlippage,
   AMMORA_FEE_POLICY_VERSION,
   ammoraLaunchFactoryV4Abi,
+  ammoraLaunchPoolV4Abi,
   type AmmoraTransaction,
   type ERC20ApprovalRequirement,
 } from "@ammora-protocol/sdk";
@@ -133,8 +134,8 @@ export function pacedHttp(url: string, intervalMs = 600): Transport {
 /**
  * Rate-limited transport for interactive reads (configs, quotes, balances,
  * curve state). The public GIWA RPC answers bursts with HTTP 429 / -32016
- * "over rate limit", so interactive reads are capped at 2 in flight with a
- * ~200 ms gap between calls, and a rate limit is retried with exponential
+ * "over rate limit", so interactive reads are capped at 4 in flight with a
+ * ~100 ms gap between calls, and a rate limit is retried with exponential
  * backoff (500 ms → 1 s → 2 s → 4 s, up to 4 attempts) instead of surfacing
  * a raw error to the user.
  */
@@ -195,7 +196,7 @@ export function limitedHttp(
 let publicClient: PublicClient | null = null;
 /**
  * Default client for interactive reads (configs, quotes, balances, curve
- * state). Rate-limited (2 in flight, ~200 ms gap, retry on 429) so a burst
+ * state). Rate-limited (4 in flight, ~100 ms gap, retry on 429) so a burst
  * of user-triggered reads never trips the public RPC — and so these reads
  * never wait behind the bulk launch scan.
  */
@@ -203,7 +204,7 @@ export function getPublicClient(): PublicClient {
   if (!publicClient) {
     publicClient = createPublicClient({
       chain: giwaSepolia,
-      transport: limitedHttp(RPC_URL, { maxConcurrent: 2, minGapMs: 200, maxRetries: 4 }),
+      transport: limitedHttp(RPC_URL, { maxConcurrent: 4, minGapMs: 100, maxRetries: 4 }),
     }) as PublicClient;
   }
   return publicClient;
@@ -324,6 +325,8 @@ export interface TokenMeta {
   name: string;
   symbol: string;
   decimals: number;
+  /** Total minted supply (raw units). Read on-chain; 0n when unreadable. */
+  totalSupply: bigint;
 }
 
 export interface CurveFull {
@@ -428,6 +431,7 @@ const ERC20_META_ABI = [
   parseAbiItem("function name() view returns (string)"),
   parseAbiItem("function symbol() view returns (string)"),
   parseAbiItem("function decimals() view returns (uint8)"),
+  parseAbiItem("function totalSupply() view returns (uint256)"),
   parseAbiItem("function balanceOf(address) view returns (uint256)"),
   parseAbiItem("function allowance(address,address) view returns (uint256)"),
 ] as const;
@@ -456,6 +460,8 @@ export interface ChartData {
   fromBlock: bigint;
   toBlock: bigint;
   launchBlock: bigint;
+  /** Full decoded Swap events in the range (candlestick chart + Trades tab). */
+  tradesList: TradeEvent[];
 }
 
 /**
@@ -496,12 +502,27 @@ export async function scanCurveChart(
     retriesPerClient: 2,
   });
   const trades: Array<{ block: bigint; price: number }> = [];
+  const tradesList: TradeEvent[] = [];
   for (const log of logs) {
     if (log.topics[0]?.toLowerCase() !== CURVE_SWAP_TOPIC.toLowerCase()) continue;
-    if (log.blockNumber == null) continue;
+    if (log.blockNumber == null || log.transactionHash == null) continue;
     try {
       const decoded = decodeEventLog({ abi: [CURVE_SWAP_EVENT], data: log.data, topics: log.topics as [Hex, ...Hex[]] });
-      trades.push({ block: log.blockNumber, price: Number.parseFloat(priceFromSqrtPrice(decoded.args.nextSqrtPrice, baseDecimals, 18)) });
+      const price = Number.parseFloat(priceFromSqrtPrice(decoded.args.nextSqrtPrice, baseDecimals, 18));
+      trades.push({ block: log.blockNumber, price });
+      tradesList.push({
+        curve,
+        trader: decoded.args.trader,
+        baseForQuote: decoded.args.baseForQuote,
+        amountIn: decoded.args.amountIn,
+        amountOut: decoded.args.amountOut,
+        fee: decoded.args.fee,
+        price,
+        block: log.blockNumber,
+        txHash: log.transactionHash,
+        logIndex: log.logIndex ?? 0,
+        timeMs: 0, // filled in after the time interpolation exists below
+      });
     } catch { /* not a Swap-shaped log — ignore */ }
   }
   trades.sort((a, b) => Number(a.block - b.block));
@@ -522,7 +543,7 @@ export async function scanCurveChart(
   // price — never invented.
   let startPrice = Number.parseFloat(currentPrice);
   try {
-    const atLaunch = await curveClient(curve).getStateAtBlock(launchBlock);
+    const atLaunch = await readCurveStateAtBlock(curve, launchBlock);
     startPrice = Number.parseFloat(priceFromSqrtPrice(atLaunch.sqrtPrice, baseDecimals, 18));
   } catch {
     if (trades.length > 0) startPrice = trades[0].price;
@@ -534,17 +555,257 @@ export async function scanCurveChart(
   points.push({ block: latest, timeMs: t1, price: Number.parseFloat(currentPrice) });
   points.sort((a, b) => a.timeMs - b.timeMs || Number(a.block - b.block));
   const deduped = points.filter((p, i) => i === 0 || p.block !== points[i - 1].block || p.price !== points[i - 1].price);
-  return { curve, points: deduped, trades: trades.length, truncated, fromBlock, toBlock: latest, launchBlock };
+  for (const t of tradesList) t.timeMs = timeAt(t.block);
+  tradesList.sort((a, b) => Number(a.block - b.block) || a.logIndex - b.logIndex);
+  return { curve, points: deduped, trades: trades.length, truncated, fromBlock, toBlock: latest, launchBlock, tradesList };
 }
 
 export async function getTokenMeta(token: Address): Promise<TokenMeta> {
   const client = getPublicClient();
-  const [name, symbol, decimals] = await Promise.all([
-    client.readContract({ address: token, abi: ERC20_META_ABI, functionName: "name" }).catch(() => "Unknown"),
-    client.readContract({ address: token, abi: ERC20_META_ABI, functionName: "symbol" }).catch(() => "???"),
-    client.readContract({ address: token, abi: ERC20_META_ABI, functionName: "decimals" }).catch(() => 18),
+  const legs = (await client.multicall({
+    multicallAddress: MULTICALL3,
+    contracts: [
+      { address: token, abi: ERC20_META_ABI, functionName: "name" },
+      { address: token, abi: ERC20_META_ABI, functionName: "symbol" },
+      { address: token, abi: ERC20_META_ABI, functionName: "decimals" },
+      { address: token, abi: ERC20_META_ABI, functionName: "totalSupply" },
+    ],
+  })) as unknown as MulticallLeg[];
+  const ok = (i: number): unknown => (legs[i]?.status === "success" ? legs[i]?.result : undefined);
+  const name = ok(0);
+  const symbol = ok(1);
+  const decimals = ok(2);
+  const totalSupply = ok(3);
+  return {
+    address: token,
+    name: typeof name === "string" ? name : "Unknown",
+    symbol: typeof symbol === "string" ? symbol : "???",
+    decimals: typeof decimals === "number" ? decimals : 18,
+    totalSupply: typeof totalSupply === "bigint" ? totalSupply : 0n,
+  };
+}
+
+/** Average block time in seconds, measured from two real block headers (cached). */
+let cachedBlockTimeSeconds: number | null = null;
+
+export async function getBlockTimeSeconds(): Promise<number> {
+  if (cachedBlockTimeSeconds !== null) return cachedBlockTimeSeconds;
+  const client = getPublicClient();
+  const latest = await client.getBlockNumber();
+  const span = 1000n;
+  const [now, then] = await Promise.all([
+    client.getBlock({ blockNumber: latest }),
+    client.getBlock({ blockNumber: latest > span ? latest - span : 0n }),
   ]);
-  return { address: token, name: String(name), symbol: String(symbol), decimals: Number(decimals) };
+  const measured = (Number(now.timestamp) - Number(then.timestamp)) / Number(latest - (latest > span ? latest - span : 0n));
+  cachedBlockTimeSeconds = measured > 0 && Number.isFinite(measured) ? measured : 1;
+  return cachedBlockTimeSeconds;
+}
+
+/** One decoded Swap on a launch curve. price = WETH per whole token after the trade. */
+export interface TradeEvent {
+  curve: Address;
+  trader: Address;
+  /** true = base token sold for WETH (Sell); false = WETH paid for base (Buy). */
+  baseForQuote: boolean;
+  amountIn: bigint;
+  amountOut: bigint;
+  fee: bigint;
+  price: number;
+  block: bigint;
+  txHash: Hash;
+  logIndex: number;
+  timeMs: number;
+}
+
+/**
+ * Swap events for a set of curves in one bounded window, newest last.
+ * Runs on the rate-limited interactive client (never the bulk scan client)
+ * with 10,000-block windows (the public RPC's log cap). Block timestamps
+ * are interpolated between two real block headers, as in scanCurveChart.
+ */
+export async function scanRecentSwaps(
+  curves: Address[],
+  fromBlock: bigint,
+  toBlock: bigint,
+  decimalsByCurve: Map<string, number>,
+): Promise<TradeEvent[]> {
+  if (curves.length === 0 || toBlock < fromBlock) return [];
+  const client = getPublicClient();
+  const logs = await scanAmmoraLogs({
+    clients: [client],
+    fromBlock,
+    toBlock,
+    addresses: curves,
+    initialWindow: 5000n,
+    minimumWindow: 100n,
+    maximumWindow: 10000n,
+    retriesPerClient: 2,
+  });
+  const [firstHeader, lastHeader] = await Promise.all([
+    client.getBlock({ blockNumber: fromBlock }),
+    client.getBlock({ blockNumber: toBlock }),
+  ]);
+  const t0 = Number(firstHeader.timestamp) * 1000;
+  const t1 = Number(lastHeader.timestamp) * 1000;
+  const spanBlocks = Number(toBlock - fromBlock);
+  const timeAt = (block: bigint): number =>
+    spanBlocks <= 0 ? t0 : t0 + (Number(block - fromBlock) / spanBlocks) * (t1 - t0);
+  const out: TradeEvent[] = [];
+  for (const log of logs) {
+    if (log.topics[0]?.toLowerCase() !== CURVE_SWAP_TOPIC.toLowerCase()) continue;
+    if (log.blockNumber == null || log.transactionHash == null || log.address == null) continue;
+    const decimals = decimalsByCurve.get(log.address.toLowerCase());
+    if (decimals === undefined) continue;
+    try {
+      const d = decodeEventLog({ abi: [CURVE_SWAP_EVENT], data: log.data, topics: log.topics as [Hex, ...Hex[]] });
+      out.push({
+        curve: log.address as Address,
+        trader: d.args.trader,
+        baseForQuote: d.args.baseForQuote,
+        amountIn: d.args.amountIn,
+        amountOut: d.args.amountOut,
+        fee: d.args.fee,
+        price: Number.parseFloat(priceFromSqrtPrice(d.args.nextSqrtPrice, decimals, 18)),
+        block: log.blockNumber,
+        txHash: log.transactionHash,
+        logIndex: log.logIndex ?? 0,
+        timeMs: timeAt(log.blockNumber),
+      });
+    } catch { /* not a Swap-shaped log — ignore */ }
+  }
+  out.sort((a, b) => Number(a.block - b.block) || a.logIndex - b.logIndex);
+  return out;
+}
+
+/** Per-curve 24h aggregates from decoded Swap events. */
+export interface TokenDayStats {
+  curve: Address;
+  /** Total WETH volume in the window (buys pay WETH, sells receive WETH). */
+  volumeWeth: number;
+  trades: number;
+  /** Price of the earliest trade in the window, or null when there was none. */
+  firstPrice: number | null;
+  lastPrice: number | null;
+}
+
+export function summarizeDayStats(trades: TradeEvent[]): Map<string, TokenDayStats> {
+  const byCurve = new Map<string, { volumeRaw: bigint; trades: number; firstPrice: number | null; lastPrice: number | null; curve: Address }>();
+  for (const t of trades) {
+    const key = t.curve.toLowerCase();
+    let acc = byCurve.get(key);
+    if (!acc) {
+      acc = { volumeRaw: 0n, trades: 0, firstPrice: null, lastPrice: null, curve: t.curve };
+      byCurve.set(key, acc);
+    }
+    // Buy: amountIn is WETH. Sell: amountOut is WETH.
+    acc.volumeRaw += t.baseForQuote ? t.amountOut : t.amountIn;
+    acc.trades++;
+    if (acc.firstPrice === null) acc.firstPrice = t.price;
+    acc.lastPrice = t.price;
+  }
+  const out = new Map<string, TokenDayStats>();
+  for (const [key, acc] of byCurve) {
+    out.set(key, {
+      curve: acc.curve,
+      volumeWeth: Number.parseFloat(formatUnits(acc.volumeRaw, 18)),
+      trades: acc.trades,
+      firstPrice: acc.firstPrice,
+      lastPrice: acc.lastPrice,
+    });
+  }
+  return out;
+}
+
+/**
+ * LaunchCreated events in a small window, on the interactive client (so a
+ * flight-log poll never queues behind the bulk launch scan). Used by the
+ * flight log to catch launches created since the last full refresh.
+ */
+export async function scanLaunchEvents(fromBlock: bigint, toBlock: bigint): Promise<Launch[]> {
+  if (toBlock < fromBlock) return [];
+  const client = getPublicClient();
+  const logs = await scanAmmoraLogs({
+    clients: [client],
+    fromBlock,
+    toBlock,
+    addresses: [FACTORY],
+    initialWindow: 5000n,
+    minimumWindow: 100n,
+    maximumWindow: 10000n,
+    retriesPerClient: 2,
+  });
+  const out: Launch[] = [];
+  for (const log of logs) {
+    if (log.topics[0]?.toLowerCase() !== LAUNCH_CREATED_TOPIC.toLowerCase()) continue;
+    if (log.blockNumber == null || log.transactionHash == null) continue;
+    const decoded = decodeEventLog({ abi: [LAUNCH_CREATED_EVENT], data: log.data, topics: log.topics as [Hex, ...Hex[]] });
+    out.push({
+      token: decoded.args.token,
+      curve: decoded.args.curve,
+      creator: decoded.args.creator,
+      configId: decoded.args.configId,
+      configHash: decoded.args.configHash,
+      protocolVersion: decoded.args.protocolVersion,
+      metadataURI: decoded.args.metadataURI,
+      blockNumber: log.blockNumber,
+      txHash: log.transactionHash,
+    });
+  }
+  return out;
+}
+
+const ERC20_TRANSFER_EVENT = parseAbiItem(
+  "event Transfer(address indexed from, address indexed to, uint256 value)",
+);
+const ERC20_TRANSFER_TOPIC = toEventSelector(ERC20_TRANSFER_EVENT);
+
+/** One decoded ERC-20 Transfer. */
+export interface TransferEvent {
+  from: Address;
+  to: Address;
+  value: bigint;
+  block: bigint;
+  txHash: Hash;
+}
+
+/** Longest history a holders scan ever covers (1.2M blocks, same as the chart). */
+export const HOLDERS_MAX_SPAN = 1_200_000n;
+
+/**
+ * Transfer events for one token in a bounded window. When the token is
+ * older than HOLDERS_MAX_SPAN the scan is truncated and says so — the
+ * caller must never present the partial count as the full count.
+ */
+export async function scanTokenTransfers(
+  token: Address,
+  launchBlock: bigint,
+): Promise<{ transfers: TransferEvent[]; truncated: boolean; scannedTo: bigint }> {
+  const client = getPublicClient();
+  const latest = await client.getBlockNumber();
+  const truncated = latest - launchBlock > HOLDERS_MAX_SPAN;
+  const fromBlock = truncated ? latest - HOLDERS_MAX_SPAN : launchBlock;
+  const logs = await scanAmmoraLogs({
+    clients: [client],
+    fromBlock,
+    toBlock: latest,
+    addresses: [token],
+    initialWindow: 5000n,
+    minimumWindow: 100n,
+    maximumWindow: 10000n,
+    retriesPerClient: 2,
+  });
+  const transfers: TransferEvent[] = [];
+  for (const log of logs) {
+    if (log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC.toLowerCase()) continue;
+    if (log.blockNumber == null || log.transactionHash == null) continue;
+    try {
+      const d = decodeEventLog({ abi: [ERC20_TRANSFER_EVENT], data: log.data, topics: log.topics as [Hex, ...Hex[]] });
+      transfers.push({ from: d.args.from, to: d.args.to, value: d.args.value, block: log.blockNumber, txHash: log.transactionHash });
+    } catch { /* not a Transfer-shaped log — ignore */ }
+  }
+  transfers.sort((a, b) => Number(a.block - b.block));
+  return { transfers, truncated, scannedTo: latest };
 }
 
 export async function getTokenBalance(token: Address, owner: Address): Promise<bigint> {
@@ -568,15 +829,121 @@ export function curveClient(curve: Address): AmmoraV4LaunchCurveClient {
   });
 }
 
+/**
+ * Canonical Multicall3 (same deployment address on most EVM chains).
+ * Verified deployed on GIWA Sepolia: eth_getCode returns bytecode.
+ * The SDK's curve reads fire ~18 separate eth_calls per state read
+ * (getStateAtBlock) and getMigrationProgressAtBlock re-reads the same
+ * state — ~37 calls per curve, ~3 s each through the rate-limited
+ * client, which is why enriching 28 launches took minutes. One
+ * multicall replaces all of them with a single eth_call.
+ */
+export const MULTICALL3: Address = "0xcA11bde05977b3631167028862bE2a173976CA11";
+
+type MulticallLeg = { status: "success" | "failure"; result?: unknown };
+
+/** The 18 curve view functions the SDK reads for a full state snapshot. */
+const CURVE_STATE_FUNCTIONS = [
+  "configId",
+  "baseToken",
+  "quoteToken",
+  "creator",
+  "sqrtPrice",
+  "status",
+  "currentFeeBps",
+  "currentDynamicFeeBps",
+  "baseReserve",
+  "quoteReserve",
+  "migrationQuoteThreshold",
+  "migrationBaseThreshold",
+  "canonicalPool",
+  "postMigrationLiquidity",
+  "launchContext",
+  "protocolRecipient",
+  "feePolicy",
+  "feePolicyVersion",
+] as const;
+
+/**
+ * Full curve state at a block in ONE eth_call (multicall), shaped exactly
+ * like the SDK's getStateAtBlock return so existing code is untouched.
+ */
+export async function readCurveStateAtBlock(
+  curve: Address,
+  blockNumber: bigint,
+): Promise<CurveFull["state"]> {
+  const client = getPublicClient();
+  const legs = (await client.multicall({
+    multicallAddress: MULTICALL3,
+    blockNumber,
+    contracts: CURVE_STATE_FUNCTIONS.map((functionName) => ({
+      address: curve,
+      abi: ammoraLaunchPoolV4Abi,
+      functionName,
+    })),
+  })) as unknown as MulticallLeg[];
+  const get = (i: number): unknown => {
+    const leg = legs[i];
+    if (!leg || leg.status !== "success") {
+      throw new Error(`Curve state read failed (${CURVE_STATE_FUNCTIONS[i]})`);
+    }
+    return leg.result;
+  };
+  const launchContext = get(14) as [Address, Address, Address, bigint];
+  return {
+    configId: get(0) as bigint,
+    baseToken: get(1) as Address,
+    quoteToken: get(2) as Address,
+    creator: get(3) as Address,
+    sqrtPrice: get(4) as bigint,
+    status: get(5) as number,
+    currentFeeBps: get(6) as number,
+    currentDynamicFeeBps: get(7) as number,
+    baseReserve: get(8) as bigint,
+    quoteReserve: get(9) as bigint,
+    migrationQuoteThreshold: get(10) as bigint,
+    migrationBaseThreshold: get(11) as bigint,
+    canonicalPool: get(12) as Address,
+    postMigrationLiquidity: get(13) as bigint,
+    partnerRecipient: launchContext[0],
+    feeVault: launchContext[1],
+    graduationAdapter: launchContext[2],
+    migrationSqrtPrice: launchContext[3],
+    protocolRecipient: get(15) as Address,
+    feePolicy: get(16) as Address,
+    feePolicyVersion: get(17) as string,
+    asOfBlock: blockNumber,
+  } as CurveFull["state"];
+}
+
+/** Graduation progress from an already-read state — pure arithmetic, no RPC. Same math as the SDK's getMigrationProgressAtBlock. */
+export function curveProgressFromState(state: CurveFull["state"]): CurveFull["progress"] {
+  const BPS_DENOMINATOR = 10_000;
+  const usesQuoteThreshold = state.migrationQuoteThreshold !== 0n;
+  const current = usesQuoteThreshold ? state.quoteReserve : state.sqrtPrice;
+  const target = usesQuoteThreshold ? state.migrationQuoteThreshold : state.migrationSqrtPrice;
+  const progressBps =
+    state.status >= 2 || current >= target
+      ? BPS_DENOMINATOR
+      : target === 0n
+        ? 0
+        : Number((current * BigInt(BPS_DENOMINATOR)) / target);
+  return {
+    ready: state.status === 2,
+    migrated: state.status === 3,
+    current,
+    target,
+    progressBps,
+    canonicalPool: state.canonicalPool,
+    asOfBlock: state.asOfBlock,
+  };
+}
+
 export async function getCurveFull(curve: Address): Promise<CurveFull> {
-  const sdk = curveClient(curve);
   const client = getPublicClient();
   const blockNumber = await client.getBlockNumber();
-  const [state, progress] = await Promise.all([
-    sdk.getStateAtBlock(blockNumber),
-    sdk.getMigrationProgressAtBlock(blockNumber),
-  ]);
-  return { state, progress };
+  const state = await readCurveStateAtBlock(curve, blockNumber);
+  return { state, progress: curveProgressFromState(state) };
 }
 
 /**

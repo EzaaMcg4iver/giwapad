@@ -36,28 +36,41 @@
     <button id="tab-create" class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg><span>Create Launch</span></button>
     <button id="tab-profile" class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5"/></svg><span>Profile</span></button>
   </nav>
+  <div class="header-search">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+    <input id="header-search" type="search" placeholder="Search by name, ticker or address" aria-label="Search launches" />
+    <kbd>/</kbd>
+  </div>
+  <a id="faucet-btn" class="btn" href="https://faucet.lambda256.io/giwa-sepolia" target="_blank" rel="noopener" title="Get free GIWA Sepolia test ETH from the Lambda256 faucet">Faucet</a>
   <button id="theme-toggle" class="btn icon-btn" title="Switch to light mode" aria-label="Toggle light/dark theme"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg></button>
   <div id="wallet-status" class="wallet"></div>
 </header>
 
 <main>
+  <div id="recent-row" class="recent-row hidden"></div>
   <div id="chain-status" class="statusbar muted">Connecting to GIWA Sepolia…</div>
 
   <section id="view-discover">
-    <div class="toolbar">
-      <input id="search-input" type="search" placeholder="Search name, symbol, or address…" />
-      <div class="filters">
-        <button id="filter-all" class="btn chip active">All</button>
-        <button id="filter-active" class="btn chip">Active</button>
-        <button id="filter-near" class="btn chip">Near graduation</button>
-        <button id="filter-graduated" class="btn chip">Graduated</button>
-        <button id="filter-mine" class="btn chip">My launches</button>
+    <div id="home-hero"></div>
+    <div id="home-top"></div>
+    <div class="home-lower">
+      <div id="home-missions">
+        <div class="missions-head">
+          <h2>Missions</h2>
+          <div class="missions-tabs">
+            <button id="mtab-trending" class="btn chip active">Trending</button>
+            <button id="mtab-new" class="btn chip">New</button>
+            <button id="mtab-near" class="btn chip">Near graduation</button>
+            <button id="mtab-graduated" class="btn chip">Graduated</button>
+          </div>
+          <button id="mine-toggle" class="btn chip">My launches</button>
+          <button id="refresh-btn" class="btn">↻ Refresh</button>
+        </div>
+        <div id="missions-table"></div>
       </div>
-      <button id="refresh-btn" class="btn">↻ Refresh</button>
+      <aside id="home-flight" class="panel"></aside>
     </div>
     <div id="launch-count" class="muted count"></div>
-    <div id="scan-status" class="muted count"></div>
-    <div id="launch-grid" class="grid"></div>
   </section>
 
   <section id="view-create" class="hidden">

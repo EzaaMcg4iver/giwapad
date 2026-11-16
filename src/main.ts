@@ -36,6 +36,11 @@ import {
   getCurveFull,
   priceFromSqrtPrice,
   scanCurveChart,
+  getBlockTimeSeconds,
+  scanRecentSwaps,
+  scanLaunchEvents,
+  scanTokenTransfers,
+  summarizeDayStats,
   quoteCurve,
   planCurveSwap,
   buildApproveTx,
@@ -54,19 +59,24 @@ import {
   type TokenMeta,
   type CurveFull,
   type ChartData,
+  type TradeEvent,
+  type TokenDayStats,
+  type TransferEvent,
 } from "./ammora";
 import { friendlyErrorMessage } from "./errors";
-import { ICON_COPY, ICON_EXTERNAL_LINK } from "./icons";
+import { ICON_COPY, ICON_EXTERNAL_LINK, ICON_SEARCH } from "./icons";
 import { initTheme, toggleTheme } from "./theme";
 import {
   buildChartSvg,
+  buildCandles,
+  buildCandleSvg,
+  CANDLE_TIMEFRAMES,
   CHART_CACHE_TTL_MS,
   CHART_HEIGHT,
-  CHART_RANGES,
   filterPointsByRange,
   formatPercentChange,
   formatPriceShort,
-  type ChartRange,
+  type CandleTimeframe,
 } from "./chart";
 
 // ---------------------------------------------------------------------------
@@ -112,6 +122,97 @@ function showError(box: HTMLElement, err: unknown): void {
   box.appendChild(d);
 }
 
+/** Real Lambda256 GIWA Sepolia test-ETH faucet (verified HTTP 200 on 2026-11-16). */
+const FAUCET_URL = "https://faucet.lambda256.io/giwa-sepolia";
+
+/** How many flight-log entries to show, and how often it polls for new ones. */
+const FLIGHT_LOG_MAX_ENTRIES = 30;
+const FLIGHT_LOG_POLL_MS = 30_000;
+/** 24h stats are re-scanned at most this often. */
+const DAY_STATS_TTL_MS = 60_000;
+const DAY_MS = 86_400_000;
+/** Trades table page size on the detail view. */
+const TRADES_PAGE_SIZE = 25;
+/** Recently-viewed tokens kept in localStorage (curve addresses, newest first). */
+const RECENT_KEY = "giwapad.recent.v1";
+const RECENT_MAX = 8;
+
+/** Compact ETH number: 698K, 2.19K, 27.48, 0.795. */
+function fmtEthCompact(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2).replace(/\.?0+$/, "")}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(2).replace(/\.?0+$/, "")}K`;
+  if (v >= 100) return v.toFixed(0);
+  if (v >= 1) return v.toFixed(2);
+  if (v > 0 && v < 0.001) return v.toExponential(1);
+  return v.toFixed(3).replace(/\.?0+$/, "");
+}
+
+/** Relative age from a wall-clock time, e.g. "15m", "3h", "2d". */
+function formatAge(timeMs: number, nowMs: number): string {
+  const s = Math.max(0, Math.floor((nowMs - timeMs) / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
+}
+
+/** Deterministic hue (0–359) from a token address — monogram fallback color. */
+function hueForAddress(address: string): number {
+  let h = 0;
+  for (let i = 2; i < address.length; i++) h = (h * 31 + address.charCodeAt(i)) % 360;
+  return h;
+}
+
+/** Token monogram tile: first symbol letter on a deterministic hue. No image invented. */
+function tokenMonogram(l: EnrichedLaunch, size: "sm" | "lg" = "sm"): HTMLElement {
+  const letter = (l.meta?.symbol ?? "?").slice(0, 1).toUpperCase();
+  const tile = el("div", `monogram monogram-${size}`, letter);
+  tile.style.background = `hsl(${hueForAddress(l.token)} 45% 45%)`;
+  return tile;
+}
+
+/** Resolve a launch's metadata image (if its metadataURI points at one); null otherwise. */
+const imageCache = new Map<string, string | null>();
+
+async function fetchTokenImage(l: EnrichedLaunch): Promise<string | null> {
+  const key = l.token.toLowerCase();
+  if (imageCache.has(key)) return imageCache.get(key) ?? null;
+  let url: string | null = null;
+  try {
+    const uri = (l.metadataURI || "").trim();
+    if (uri) {
+      const jsonUrl = uri.startsWith("ipfs://") ? `https://ipfs.io/ipfs/${uri.slice(7)}` : uri;
+      const res = await fetch(jsonUrl);
+      if (res.ok) {
+        const meta = (await res.json()) as { image?: unknown };
+        if (typeof meta.image === "string" && meta.image) {
+          url = meta.image.startsWith("ipfs://") ? `https://ipfs.io/ipfs/${meta.image.slice(7)}` : meta.image;
+        }
+      }
+    }
+  } catch { /* no image — monogram fallback */ }
+  imageCache.set(key, url);
+  return url;
+}
+
+/** Token tile: metadata image when one exists, monogram otherwise. */
+function tokenTile(l: EnrichedLaunch, size: "sm" | "lg" = "sm"): HTMLElement {
+  const wrap = el("div", `token-tile token-tile-${size}`);
+  wrap.appendChild(tokenMonogram(l, size));
+  void fetchTokenImage(l).then((url) => {
+    if (!url) return;
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = l.meta?.symbol ?? "";
+    img.className = "token-img";
+    img.onerror = () => img.remove();
+    wrap.innerHTML = "";
+    wrap.appendChild(img);
+  });
+  return wrap;
+}
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -131,7 +232,10 @@ const state = {
   configs: [] as LaunchConfig[],
   launches: [] as EnrichedLaunch[],
   scanStatus: "idle",
-  filter: "all" as "all" | "active" | "near" | "graduated" | "mine",
+  /** Missions-table tab: Trending (24h volume) / New / Near graduation / Graduated. */
+  missionsTab: "trending" as "trending" | "new" | "near" | "graduated",
+  /** "My launches" toggle on the Missions table. */
+  mineOnly: false,
   search: "",
   detailCurve: null as string | null,
   slippageBps: 100,
@@ -139,7 +243,54 @@ const state = {
   // Cached non-zero token holdings, keyed by token address (lowercase).
   holdings: new Map<string, { balance: bigint; decimals: number; symbol: string }>(),
   holdingsFor: null as Address | null,
+  /** 24h per-curve stats (volume, trades, first/last price), keyed by curve (lowercase). */
+  dayStats: new Map<string, TokenDayStats>(),
+  dayStatsAt: 0,
+  /** Raw 24h Swap events (feeds the flight log). */
+  dayTrades: [] as TradeEvent[],
+  /** Latest known chain head (block + wall time) for honest relative ages. */
+  chainHead: null as { block: bigint; timeMs: number } | null,
+  blockTimeSeconds: null as number | null,
 };
+
+function loadRecent(): string[] {
+  try {
+    const raw = localStorage.getItem(RECENT_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string").slice(0, RECENT_MAX) : [];
+  } catch {
+    return [];
+  }
+}
+
+function recordRecent(curve: string): void {
+  try {
+    const list = loadRecent().filter((c) => c.toLowerCase() !== curve.toLowerCase());
+    list.unshift(curve);
+    localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, RECENT_MAX)));
+  } catch { /* non-fatal */ }
+}
+
+/** "Recently viewed" chips under the header — only tokens the user actually opened. */
+function renderRecent(): void {
+  const row = $("#recent-row");
+  row.innerHTML = "";
+  const recent = loadRecent()
+    .map((c) => state.launches.find((l) => l.curve.toLowerCase() === c.toLowerCase()))
+    .filter((l): l is EnrichedLaunch => !!l);
+  if (recent.length === 0) {
+    row.classList.add("hidden");
+    return;
+  }
+  row.classList.remove("hidden");
+  row.appendChild(el("span", "muted", "Recently viewed"));
+  for (const l of recent) {
+    const chip = el("button", "btn chip recent-chip", `$${l.meta?.symbol ?? shortAddr(l.token)}`) as HTMLButtonElement;
+    chip.onclick = () => { state.detailCurve = l.curve; showView("detail"); void renderDetail(l.curve); };
+    row.appendChild(chip);
+  }
+}
 
 const LAUNCH_CACHE_KEY = "giwapad.launches.v1";
 
@@ -254,29 +405,368 @@ async function waitReceipt(hash: Hash) {
 // Discover
 // ---------------------------------------------------------------------------
 
+/** Market cap in WETH: current price × total supply. Null until price/supply are known. */
+function launchMcap(l: EnrichedLaunch): number | null {
+  if (!l.meta || !l.price) return null;
+  const price = Number.parseFloat(l.price);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  const supply = Number(l.meta.totalSupply) / 10 ** l.meta.decimals;
+  if (!Number.isFinite(supply) || supply <= 0) return null;
+  return price * supply;
+}
+
+function launchDayStats(l: EnrichedLaunch): TokenDayStats | undefined {
+  return state.dayStats.get(l.curve.toLowerCase());
+}
+
+/**
+ * 24h % change: current price vs the earliest trade price inside the 24h
+ * window. Null when there was no trade in 24h — the table shows "—".
+ */
+function launchChange24h(l: EnrichedLaunch): number | null {
+  const s = launchDayStats(l);
+  if (!s || s.firstPrice === null || !l.price) return null;
+  const now = Number.parseFloat(l.price);
+  if (s.firstPrice <= 0 || !Number.isFinite(now)) return null;
+  return ((now - s.firstPrice) / s.firstPrice) * 100;
+}
+
+/** Fuel state label shared by the table, cards, and hero. */
+function fuelLabel(l: EnrichedLaunch): string {
+  if (!l.curveData) return "Loading…";
+  if (l.curveData.state.status === 3) return "Graduated";
+  if (l.curveData.progress.progressBps >= 8000) return "Near graduation";
+  return "Active";
+}
+
+/** Interpolated launch wall time from the chain head + measured block time. */
+function launchTimeMs(l: EnrichedLaunch): number | null {
+  const head = state.chainHead;
+  if (!head) return null;
+  const blockTimeMs = (state.blockTimeSeconds ?? 1) * 1000;
+  return head.timeMs - Number(head.block - l.blockNumber) * blockTimeMs;
+}
+
+/** Launch age ("3h") — "—" until the chain head is known, never a fake "0s". */
+function formatLaunchAge(l: EnrichedLaunch, nowMs: number): string {
+  const t = launchTimeMs(l);
+  return t === null ? "—" : formatAge(t, nowMs);
+}
+
 function filteredLaunches(): EnrichedLaunch[] {
   const q = state.search.trim().toLowerCase();
-  return state.launches.filter((l) => {
-    if (state.filter === "active" && l.curveData?.state.status !== 1) return false;
-    if (state.filter === "near" && !(l.curveData && l.curveData.progress.progressBps >= 8000 && l.curveData.state.status === 1)) return false;
-    if (state.filter === "graduated" && l.curveData?.state.status !== 3) return false;
-    if (state.filter === "mine" && (!state.account || l.creator.toLowerCase() !== state.account.toLowerCase())) return false;
+  const items = state.launches.filter((l) => {
+    if (state.mineOnly && (!state.account || l.creator.toLowerCase() !== state.account.toLowerCase())) return false;
+    if (state.missionsTab === "near" && fuelLabel(l) !== "Near graduation") return false;
+    if (state.missionsTab === "graduated" && fuelLabel(l) !== "Graduated") return false;
     if (q) {
       const hay = `${l.meta?.name ?? ""} ${l.meta?.symbol ?? ""} ${l.token} ${l.curve} ${l.creator}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
   });
+  const byMcap = (a: EnrichedLaunch, b: EnrichedLaunch): number =>
+    (launchMcap(b) ?? -1) - (launchMcap(a) ?? -1) || Number(b.blockNumber - a.blockNumber);
+  if (state.missionsTab === "trending") {
+    items.sort((a, b) =>
+      (launchDayStats(b)?.volumeWeth ?? 0) - (launchDayStats(a)?.volumeWeth ?? 0) || byMcap(a, b));
+  } else if (state.missionsTab === "new") {
+    items.sort((a, b) => Number(b.blockNumber - a.blockNumber));
+  } else if (state.missionsTab === "near") {
+    items.sort((a, b) =>
+      (b.curveData?.progress.progressBps ?? 0) - (a.curveData?.progress.progressBps ?? 0));
+  } else {
+    items.sort(byMcap);
+  }
+  return items;
 }
 
+function topByMcap(): EnrichedLaunch | null {
+  let best: EnrichedLaunch | null = null;
+  let bestMcap = -1;
+  for (const l of state.launches) {
+    const m = launchMcap(l);
+    if (m !== null && m > bestMcap) { bestMcap = m; best = l; }
+  }
+  return best;
+}
+
+function openDetail(l: EnrichedLaunch): void {
+  state.detailCurve = l.curve;
+  showView("detail");
+  void renderDetail(l.curve);
+}
+
+/** Segmented fuel bar (20 segments, like a progress gauge). */
+function fuelSegments(pct: number, segments = 20): HTMLElement {
+  const bar = el("div", "fuel-seg");
+  const filled = Math.round((Math.min(100, Math.max(0, pct)) / 100) * segments);
+  for (let i = 0; i < segments; i++) {
+    bar.appendChild(el("div", `fuel-seg-cell${i < filled ? " on" : ""}`));
+  }
+  return bar;
+}
+
+function renderHero(): void {
+  const box = $("#home-hero");
+  box.innerHTML = "";
+  const top = topByMcap();
+  if (!top) {
+    if (state.launches.length === 0) {
+      box.appendChild(el("div", "empty", "No launches found yet on this deployment. Be the first — create a launch."));
+    } else {
+      box.appendChild(el("div", "empty", "Loading top token…"));
+    }
+    return;
+  }
+  const hero = el("div", "hero card");
+  hero.tabIndex = 0;
+  hero.setAttribute("role", "button");
+  hero.onclick = () => openDetail(top);
+  hero.onkeydown = (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDetail(top); }
+  };
+  const left = el("div", "hero-left");
+  const titleRow = el("div", "hero-title-row");
+  titleRow.appendChild(tokenTile(top, "lg"));
+  const titleBox = el("div", "");
+  titleBox.appendChild(el("div", "hero-symbol", `$${top.meta?.symbol ?? shortAddr(top.token)}`));
+  titleBox.appendChild(el("div", "muted", top.meta?.name ?? ""));
+  const heroAge = launchTimeMs(top);
+  titleBox.appendChild(el("div", "muted", heroAge === null ? "launch time loading…" : `launched ${formatAge(heroAge, state.chainHead?.timeMs ?? Date.now())} ago`));
+  titleRow.appendChild(titleBox);
+  left.appendChild(titleRow);
+  const tradeBtn = el("button", "btn primary hero-trade", `Trade $${top.meta?.symbol ?? ""}`) as HTMLButtonElement;
+  tradeBtn.onclick = (e) => { e.stopPropagation(); openDetail(top); };
+  left.appendChild(tradeBtn);
+  hero.appendChild(left);
+  const right = el("div", "hero-right");
+  const fuelPct = top.curveData ? top.curveData.progress.progressBps / 100 : 0;
+  const fuelRow = el("div", "hero-fuel-row");
+  fuelRow.appendChild(el("span", "muted", "Fuel"));
+  fuelRow.appendChild(el("span", "hero-fuel-pct", `${fuelPct.toFixed(1)}%`));
+  right.appendChild(fuelRow);
+  right.appendChild(fuelSegments(fuelPct));
+  const mini = el("div", "hero-chart");
+  const curveTrades = state.dayTrades.filter((t) => t.curve.toLowerCase() === top.curve.toLowerCase());
+  const nowMs = state.chainHead?.timeMs ?? Date.now();
+  const price = Number.parseFloat(top.price ?? "0");
+  const pts = curveTrades.length > 0
+    ? curveTrades.map((t) => ({ block: t.block, timeMs: t.timeMs, price: t.price }))
+    : [
+        { block: top.blockNumber, timeMs: nowMs - 3600_000, price },
+        { block: top.blockNumber, timeMs: nowMs, price },
+      ];
+  if (curveTrades.length > 0) pts.push({ block: top.blockNumber, timeMs: nowMs, price });
+  mini.appendChild(buildChartSvg(pts, 560, 120));
+  right.appendChild(mini);
+  hero.appendChild(right);
+  box.appendChild(hero);
+}
+
+function renderTopCards(): void {
+  const box = $("#home-top");
+  box.innerHTML = "";
+  const ranked = [...state.launches]
+    .map((l) => ({ l, mcap: launchMcap(l) }))
+    .filter((x): x is { l: EnrichedLaunch; mcap: number } => x.mcap !== null)
+    .sort((a, b) => b.mcap - a.mcap)
+    .slice(0, 4);
+  if (ranked.length === 0) return;
+  box.appendChild(el("h2", "", "Top by market cap"));
+  const grid = el("div", "top-grid");
+  for (const { l, mcap } of ranked) {
+    const card = el("div", "card top-card");
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    card.onclick = () => openDetail(l);
+    card.onkeydown = (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDetail(l); }
+    };
+    const media = el("div", "top-card-media");
+    media.appendChild(tokenTile(l, "lg"));
+    media.appendChild(el("span", `badge status-${l.curveData?.state.status ?? -1}`, fuelLabel(l)));
+    card.appendChild(media);
+    const head = el("div", "card-head");
+    head.appendChild(el("div", "card-title", `$${l.meta?.symbol ?? shortAddr(l.token)}`));
+    const chg = launchChange24h(l);
+    head.appendChild(el("span", chg === null ? "muted" : chg >= 0 ? "chart-up" : "chart-down", chg === null ? "—" : formatPercentChange(chg)));
+    card.appendChild(head);
+    card.appendChild(el("div", "muted", l.meta?.name ?? ""));
+    const mcapRow = el("div", "row");
+    mcapRow.appendChild(el("span", "k", "Market cap"));
+    mcapRow.appendChild(el("span", "v", `${fmtEthCompact(mcap)} ETH`));
+    card.appendChild(mcapRow);
+    const poolRow = el("div", "row");
+    poolRow.appendChild(el("span", "k", "Pool"));
+    poolRow.appendChild(el("span", "v", l.curveData ? `${fmtEthCompact(Number(formatUnits(l.curveData.state.quoteReserve, 18)))} ETH` : "…"));
+    card.appendChild(poolRow);
+    grid.appendChild(card);
+  }
+  box.appendChild(grid);
+}
+
+function renderMissionsTable(): void {
+  const box = $("#missions-table");
+  box.innerHTML = "";
+  const items = filteredLaunches();
+  if (items.length === 0) {
+    box.appendChild(el("div", "empty", state.launches.length === 0
+      ? "No launches found yet on this deployment. Be the first — create a launch."
+      : "No launches match this filter."));
+    return;
+  }
+  const nowMs = state.chainHead?.timeMs ?? Date.now();
+  const scroll = el("div", "table-scroll");
+  const table = document.createElement("table");
+  table.className = "missions-table";
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const h of ["Token", "Mcap", "24h", "Fuel", "Vol 24h", "Trades 24h", "Price", "Age", ""]) {
+    headRow.appendChild(el("th", "", h));
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  for (const l of items) {
+    const tr = document.createElement("tr");
+    tr.className = "missions-row";
+    tr.onclick = () => openDetail(l);
+    const tokenCell = document.createElement("td");
+    const tokenWrap = el("div", "table-token");
+    tokenWrap.appendChild(tokenTile(l, "sm"));
+    const names = el("div", "");
+    names.appendChild(el("div", "table-symbol", `$${l.meta?.symbol ?? shortAddr(l.token)}`));
+    names.appendChild(el("div", "muted table-name", l.meta?.name ?? ""));
+    tokenWrap.appendChild(names);
+    tokenCell.appendChild(tokenWrap);
+    tr.appendChild(tokenCell);
+    const mcap = launchMcap(l);
+    tr.appendChild(el("td", "", mcap === null ? "…" : `${fmtEthCompact(mcap)} ETH`));
+    const chg = launchChange24h(l);
+    const chgCell = el("td", "", chg === null ? "—" : formatPercentChange(chg));
+    if (chg !== null) chgCell.className = chg >= 0 ? "chart-up" : "chart-down";
+    tr.appendChild(chgCell);
+    const fuelCell = document.createElement("td");
+    if (l.curveData) {
+      const pct = l.curveData.progress.progressBps / 100;
+      fuelCell.appendChild(fuelSegments(pct));
+      fuelCell.appendChild(el("div", "muted fuel-pct", `${pct.toFixed(1)}%`));
+    } else {
+      fuelCell.textContent = "…";
+    }
+    tr.appendChild(fuelCell);
+    const s = launchDayStats(l);
+    // A missing entry means zero 24h trades once a scan has landed — show
+    // "0", not a loading "…". ("…" only until the first scan lands.)
+    const dayStatsLanded = state.dayStatsAt > 0;
+    tr.appendChild(el("td", "", s ? fmtEthCompact(s.volumeWeth) : dayStatsLanded ? "0" : "…"));
+    tr.appendChild(el("td", "", s ? String(s.trades) : dayStatsLanded ? "0" : "…"));
+    tr.appendChild(el("td", "", l.price ? `${formatPriceShort(Number.parseFloat(l.price))} WETH` : "…"));
+    tr.appendChild(el("td", "", formatLaunchAge(l, nowMs)));
+    const tradeCell = document.createElement("td");
+    const tradeBtn = el("button", "btn primary table-trade", "Trade") as HTMLButtonElement;
+    tradeBtn.onclick = (e) => { e.stopPropagation(); openDetail(l); };
+    tradeCell.appendChild(tradeBtn);
+    tr.appendChild(tradeCell);
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  scroll.appendChild(table);
+  box.appendChild(scroll);
+}
+
+interface FlightEntry {
+  kind: "buy" | "sell" | "launch";
+  timeMs: number | null;
+  symbol: string;
+  amountWeth: number;
+  curve: string;
+  creator?: string;
+}
+
+function buildFlightEntries(): FlightEntry[] {
+  const entries: FlightEntry[] = [];
+  const nowMs = state.chainHead?.timeMs ?? Date.now();
+  for (const t of state.dayTrades) {
+    const l = state.launches.find((x) => x.curve.toLowerCase() === t.curve.toLowerCase());
+    entries.push({
+      kind: t.baseForQuote ? "sell" : "buy",
+      timeMs: t.timeMs,
+      symbol: l?.meta?.symbol ?? shortAddr(t.curve),
+      amountWeth: Number(t.baseForQuote ? t.amountOut : t.amountIn) / 1e18,
+      curve: t.curve,
+    });
+  }
+  for (const l of state.launches) {
+    entries.push({
+      kind: "launch",
+      timeMs: launchTimeMs(l),
+      symbol: l.meta?.symbol ?? shortAddr(l.token),
+      amountWeth: 0,
+      curve: l.curve,
+      creator: l.creator,
+    });
+  }
+  entries.sort((a, b) => (b.timeMs ?? -1) - (a.timeMs ?? -1));
+  return entries.slice(0, FLIGHT_LOG_MAX_ENTRIES);
+}
+
+function renderFlightLog(): void {
+  const box = $("#home-flight");
+  box.innerHTML = "";
+  const head = el("div", "flight-head");
+  head.appendChild(el("h3", "", "Flight log"));
+  head.appendChild(el("span", "live-dot", ""));
+  box.appendChild(head);
+  const entries = buildFlightEntries();
+  const nowMs = state.chainHead?.timeMs ?? Date.now();
+  if (entries.length === 0) {
+    box.appendChild(el("div", "muted", "No trades or launches yet — the feed fills in as activity happens on-chain."));
+    return;
+  }
+  const list = el("div", "flight-list");
+  for (const e of entries) {
+    const row = el("div", "flight-row");
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
+    const open = () => {
+      const l = state.launches.find((x) => x.curve.toLowerCase() === e.curve.toLowerCase());
+      if (l) openDetail(l);
+    };
+    row.onclick = open;
+    row.onkeydown = (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); }
+    };
+    row.appendChild(el("span", `badge flight-${e.kind}`, e.kind === "buy" ? "Buy" : e.kind === "sell" ? "Sell" : "Launch"));
+    row.appendChild(el("span", "flight-symbol", `$${e.symbol}`));
+    row.appendChild(el("span", "flight-amount", e.kind === "launch"
+      ? (e.creator ? shortAddr(e.creator) : "")
+      : `${fmtEthCompact(e.amountWeth)} ETH`));
+    row.appendChild(el("span", "muted flight-age", e.timeMs === null ? "—" : formatAge(e.timeMs, nowMs)));
+    list.appendChild(row);
+  }
+  box.appendChild(list);
+}
+
+function renderDiscover(): void {
+  const count = state.launches.length;
+  $("#launch-count").textContent =
+    `${filteredLaunches().length} of ${count} launches · ${state.scanStatus}`;
+  renderHero();
+  renderTopCards();
+  renderMissionsTable();
+  renderFlightLog();
+}
+
+/** Compact launch card (Profile "Launch saya" grid). */
 function launchCard(l: EnrichedLaunch): HTMLElement {
   const card = el("div", "card");
   card.tabIndex = 0;
   card.setAttribute("role", "button");
-  const openDetail = () => { state.detailCurve = l.curve; showView("detail"); void renderDetail(l.curve); };
-  card.onclick = openDetail;
+  card.onclick = () => openDetail(l);
   card.onkeydown = (e) => {
-    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDetail(); }
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDetail(l); }
   };
   const head = el("div", "card-head");
   head.appendChild(el("div", "card-title", l.meta ? `${l.meta.name} (${l.meta.symbol})` : shortAddr(l.token)));
@@ -311,37 +801,127 @@ function launchCard(l: EnrichedLaunch): HTMLElement {
   return card;
 }
 
-function renderDiscover(): void {
-  const grid = $("#launch-grid");
-  grid.innerHTML = "";
-  const items = filteredLaunches();
-  $("#launch-count").textContent =
-    `${items.length} of ${state.launches.length} launches · ${state.scanStatus}`;
-  if (items.length === 0) {
-    grid.appendChild(el("div", "empty", state.launches.length === 0
-      ? "No launches found yet on this deployment. Be the first — create a launch."
-      : "No launches match this filter."));
-    return;
-  }
-  for (const l of items) {
-    grid.appendChild(launchCard(l));
-  }
+let dayStatsRun = 0;
+/** How many curves the last day-stats scan covered — a partial scan must not poison the 60s TTL. */
+let dayStatsCoveredCurves = 0;
+/** A scan is already in flight — overlapping scans invalidated each other (run guard) and none ever landed. */
+let dayStatsRunning = false;
+/** How many enriched launches the last scan covered — re-scan only when enrichment added more. */
+let dayStatsScannedEnriched = 0;
+
+/**
+ * Seed the chain head + block time at boot (3 fast calls) so launch ages
+ * and the flight log show real relative times immediately — they used to
+ * wait for the full day-stats scan and showed a fake "0s" meanwhile.
+ */
+async function seedChainHead(): Promise<void> {
+  try {
+    const client = getPublicClient();
+    const latest = await client.getBlockNumber();
+    const [head, blockTime] = await Promise.all([
+      client.getBlock({ blockNumber: latest }),
+      getBlockTimeSeconds(),
+    ]);
+    state.chainHead = { block: latest, timeMs: Number(head.timestamp) * 1000 };
+    state.blockTimeSeconds = blockTime;
+    renderDiscover();
+    renderFlightLog();
+  } catch { /* ages stay "—" until the day-stats scan seeds the head */ }
+}
+
+/**
+ * 24h stats for every known curve, from ONE multi-address Swap scan over
+ * the last 24h (block time measured from real headers). Best effort and
+ * cached for 60s once a scan covered every known launch — the table shows
+ * "…" until the first scan lands.
+ */
+async function loadDayStats(): Promise<void> {
+  if (state.launches.length === 0) return;
+  if (Date.now() - state.dayStatsAt < DAY_STATS_TTL_MS && dayStatsCoveredCurves >= state.launches.length) return;
+  if (dayStatsRunning) return;
+  const enriched = state.launches.filter((l) => l.meta);
+  if (enriched.length === 0) return;
+  const run = ++dayStatsRun;
+  dayStatsRunning = true;
+  try {
+    const client = getPublicClient();
+    const latest = await client.getBlockNumber();
+    if (state.blockTimeSeconds === null) state.blockTimeSeconds = await getBlockTimeSeconds();
+    const blocksPerDay = Math.max(1, Math.floor(86400 / state.blockTimeSeconds));
+    const fromBlock = latest > BigInt(blocksPerDay) ? latest - BigInt(blocksPerDay) : 0n;
+    const curves = enriched.map((l) => l.curve);
+    const decimals = new Map(enriched.map((l) => [l.curve.toLowerCase(), l.meta!.decimals]));
+    const trades = await scanRecentSwaps(curves, fromBlock, latest, decimals);
+    if (run !== dayStatsRun) return;
+    state.dayStats = summarizeDayStats(trades);
+    state.dayTrades = trades;
+    state.dayStatsAt = Date.now();
+    dayStatsCoveredCurves = enriched.length;
+    dayStatsScannedEnriched = enriched.length;
+    const head = await client.getBlock({ blockNumber: latest });
+    state.chainHead = { block: latest, timeMs: Number(head.timestamp) * 1000 };
+    renderDiscover();
+    // Enrichment may still be adding tokens — scan again once more land,
+    // so the table fills up instead of freezing at the first partial scan.
+    if (state.launches.filter((l) => l.meta).length > dayStatsScannedEnriched) {
+      setTimeout(() => void loadDayStats(), 2000);
+    }
+  } catch { /* stats are best-effort; the table shows "—" until they load */ }
+  finally { dayStatsRunning = false; }
+}
+
+/** Flight-log poll: catch launches created since the last refresh, then refresh 24h stats. */
+async function pollFlightLog(): Promise<void> {
+  if (state.view !== "discover") return;
+  try {
+    const client = getPublicClient();
+    const latest = await client.getBlockNumber();
+    const from = state.chainHead ? state.chainHead.block + 1n : latest;
+    if (latest >= from) {
+      const fresh = await scanLaunchEvents(from, latest);
+      if (fresh.length > 0) {
+        const known = new Set(state.launches.map((l) => l.curve.toLowerCase()));
+        const added = fresh.filter((l) => !known.has(l.curve.toLowerCase()));
+        if (added.length > 0) {
+          state.launches = [...state.launches, ...added].sort((a, b) => Number(b.blockNumber - a.blockNumber));
+          // Persist the launches but keep the bulk scan's own progress
+          // marker, so the scan does not skip blocks it has not reached yet.
+          const cache = loadLaunchCache();
+          saveLaunchCache(state.launches, cache.scannedTo);
+          void enrichLaunches();
+        }
+      }
+    }
+    await loadDayStats();
+    renderFlightLog();
+  } catch { /* best effort — the next poll retries */ }
 }
 
 async function enrichLaunches(): Promise<void> {
-  // Sequential, paced — the public RPC rate-limits bursts.
+  // Sequential, paced — the public RPC rate-limits bursts. While the user
+  // is on a detail view the enrichment pauses, so the detail's own reads
+  // (meta, curve state, chart scan) never queue behind this loop — that
+  // queue was the ~40–50 s cold detail load.
   for (const l of state.launches) {
+    while (state.view === "detail") {
+      await new Promise((r) => setTimeout(r, 400));
+    }
     if (l.meta && l.curveData) continue;
     try {
-      l.meta = await getTokenMeta(l.token);
-      l.curveData = await getCurveFull(l.curve);
+      const [meta, curveData] = await Promise.all([
+        getTokenMeta(l.token),
+        getCurveFull(l.curve),
+      ]);
+      l.meta = meta;
+      l.curveData = curveData;
       l.price = priceFromSqrtPrice(l.curveData.state.sqrtPrice, l.meta.decimals, 18);
     } catch (err) {
       l.loadError = friendlyErrorMessage(err);
     }
     renderDiscover();
-    await new Promise((r) => setTimeout(r, 400));
+    await new Promise((r) => setTimeout(r, 150));
   }
+  void loadDayStats();
 }
 
 /**
@@ -354,6 +934,7 @@ function insertOptimisticLaunch(l: {
   token: Address; curve: Address; creator: Address; configId: bigint;
   configHash: Hex; protocolVersion: number; metadataURI: string;
   blockNumber: bigint; txHash: Hash; name: string; symbol: string; decimals: number;
+  totalSupply: bigint;
 }): void {
   const tokenKey = l.token.toLowerCase();
   const curveKey = l.curve.toLowerCase();
@@ -368,7 +949,7 @@ function insertOptimisticLaunch(l: {
     metadataURI: l.metadataURI,
     blockNumber: l.blockNumber,
     txHash: l.txHash,
-    meta: { address: l.token, name: l.name, symbol: l.symbol, decimals: l.decimals },
+    meta: { address: l.token, name: l.name, symbol: l.symbol, decimals: l.decimals, totalSupply: l.totalSupply },
   };
   state.launches = [...state.launches, launch].sort((a, b) => Number(b.blockNumber - a.blockNumber));
   // Persist the launch but keep the scan's own progress marker, so the scan
@@ -379,7 +960,6 @@ function insertOptimisticLaunch(l: {
 }
 
 async function refreshLaunches(): Promise<void> {
-  const statusEl = $("#scan-status");
   try {
     state.scanStatus = "scanning…";
     renderDiscover();
@@ -403,13 +983,12 @@ async function refreshLaunches(): Promise<void> {
     state.launches = [...byCurve.values()].sort((a, b) => Number(b.blockNumber - a.blockNumber));
     saveLaunchCache(state.launches, latest);
     state.scanStatus = `scanned to block ${latest.toString()}`;
-    if (statusEl) statusEl.textContent = state.scanStatus;
     renderDiscover();
     void enrichLaunches();
   } catch (err) {
     state.scanStatus = "scan failed";
     renderDiscover();
-    if (statusEl) showError(statusEl, err);
+    showError($("#launch-count"), err);
   }
 }
 
@@ -600,27 +1179,86 @@ async function renderProfile(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Price chart (detail view) — custom SVG, no chart library, no new deps.
-// Data comes from real on-chain Swap events (see scanCurveChart).
-// Drawing and range logic live in ./chart.ts; this panel only wires it up.
+// Candlestick chart (detail view) — custom SVG, no chart library, no new deps.
+// Data comes from real on-chain Swap events (see scanCurveChart): OHLC
+// candles per timeframe + a Log-scale toggle. Drawing and bucketing live in
+// ./chart.ts; this panel only wires it up.
 // ---------------------------------------------------------------------------
 
-let chartRange: ChartRange = "all";
+let candleTimeframe: CandleTimeframe = "auto";
+let candleLog = false;
 const chartCache = new Map<string, { at: number; data: ChartData }>();
+const chartInflight = new Map<string, Promise<ChartData>>();
+
+/** Chart data for a launch, cached 120s. Shared by the chart panel and the Trades tab. */
+async function getDetailChartData(l: EnrichedLaunch): Promise<ChartData> {
+  const key = l.curve.toLowerCase();
+  const cached = chartCache.get(key);
+  if (cached && Date.now() - cached.at < CHART_CACHE_TTL_MS) return cached.data;
+  const running = chartInflight.get(key);
+  if (running) return running;
+  const p = scanCurveChart(l.curve, l.blockNumber, l.meta!.decimals, l.price ?? "0")
+    .then((data) => {
+      chartCache.set(key, { at: Date.now(), data });
+      chartInflight.delete(key);
+      return data;
+    })
+    .catch((err: unknown) => {
+      chartInflight.delete(key);
+      throw err;
+    });
+  chartInflight.set(key, p);
+  return p;
+}
+
+/**
+ * Holders from Transfer events. The curve contract itself is excluded: it
+ * holds the market's base reserve, it is not a wallet holding. Zero-address
+ * (burn) moves are excluded too.
+ */
+function computeHolders(
+  transfers: TransferEvent[],
+  curve: Address,
+): { count: number; top: Array<{ address: string; balance: bigint }> } {
+  const zero = "0x0000000000000000000000000000000000000000";
+  const balances = new Map<string, bigint>();
+  for (const t of transfers) {
+    const from = t.from.toLowerCase();
+    const to = t.to.toLowerCase();
+    if (from !== zero) balances.set(from, (balances.get(from) ?? 0n) - t.value);
+    if (to !== zero) balances.set(to, (balances.get(to) ?? 0n) + t.value);
+  }
+  balances.delete(curve.toLowerCase());
+  const holders = [...balances.entries()]
+    .filter(([, b]) => b > 0n)
+    .sort((a, b) => (b[1] > a[1] ? 1 : b[1] < a[1] ? -1 : 0))
+    .map(([address, balance]) => ({ address, balance }));
+  return { count: holders.length, top: holders };
+}
 
 function chartPanel(l: EnrichedLaunch): HTMLElement {
   const wrap = el("div", "panel chart-panel");
-  wrap.appendChild(el("h3", "", "Price chart"));
+  const headRow = el("div", "chart-head");
+  headRow.appendChild(el("h3", "", `${l.meta!.symbol} / WETH`));
+  const logBtn = el("button", `btn seg-btn${candleLog ? " active" : ""}`, "Log") as HTMLButtonElement;
+  logBtn.title = "Toggle log scale";
+  logBtn.onclick = () => {
+    candleLog = !candleLog;
+    logBtn.classList.toggle("active", candleLog);
+    void loadChart();
+  };
+  headRow.appendChild(logBtn);
+  wrap.appendChild(headRow);
   const segRow = el("div", "seg");
-  const rangeBtns = new Map<ChartRange, HTMLButtonElement>();
-  for (const { range: r, label } of CHART_RANGES) {
-    const b = el("button", `btn seg-btn${chartRange === r ? " active" : ""}`, label) as HTMLButtonElement;
+  const tfBtns = new Map<CandleTimeframe, HTMLButtonElement>();
+  for (const { timeframe: tf, label } of CANDLE_TIMEFRAMES) {
+    const b = el("button", `btn seg-btn${candleTimeframe === tf ? " active" : ""}`, label) as HTMLButtonElement;
     b.onclick = () => {
-      chartRange = r;
-      for (const [rr, bb] of rangeBtns) bb.classList.toggle("active", rr === r);
+      candleTimeframe = tf;
+      for (const [t, bb] of tfBtns) bb.classList.toggle("active", t === tf);
       void loadChart();
     };
-    rangeBtns.set(r, b);
+    tfBtns.set(tf, b);
     segRow.appendChild(b);
   }
   wrap.appendChild(segRow);
@@ -634,31 +1272,30 @@ function chartPanel(l: EnrichedLaunch): HTMLElement {
   wrap.appendChild(body);
 
   async function loadChart(): Promise<void> {
-    const key = l.curve.toLowerCase();
     try {
-      const cached = chartCache.get(key);
-      let data = cached && Date.now() - cached.at < CHART_CACHE_TTL_MS ? cached.data : null;
-      if (!data) {
-        data = await scanCurveChart(l.curve, l.blockNumber, l.meta!.decimals, l.price ?? "0");
-        chartCache.set(key, { at: Date.now(), data });
-      }
-      const pts = filterPointsByRange(data, chartRange);
+      const data = await getDetailChartData(l);
+      const candles = buildCandles(data.tradesList, candleTimeframe);
       statsBox.innerHTML = "";
       body.innerHTML = "";
       if (data.trades === 0) {
         body.appendChild(el("div", "muted", "Belum ada trade — harga masih harga awal."));
-      } else if (data.truncated) {
+        // Flat starting-price line, so the panel is never blank.
+        body.appendChild(buildChartSvg(filterPointsByRange(data, "all")));
+        body.appendChild(el("div", "muted chart-note",
+          `0 trade · dari blok ${data.launchBlock.toString()} · harga dari event Swap di chain`));
+        return;
+      }
+      if (data.truncated) {
         body.appendChild(el("div", "muted", "Menampilkan 1,2 jt blok terakhir."));
       }
-      if (pts.length === 0) {
+      if (candles.length === 0) {
         body.appendChild(el("div", "muted", "Tidak ada trade pada rentang ini."));
         return;
       }
-      const prices = pts.map((p) => p.price);
-      const first = prices[0];
-      const last = prices[prices.length - 1];
-      const low = Math.min(...prices);
-      const high = Math.max(...prices);
+      const first = candles[0].open;
+      const last = candles[candles.length - 1].close;
+      const low = Math.min(...candles.map((c) => c.low));
+      const high = Math.max(...candles.map((c) => c.high));
       const change = first > 0 ? ((last - first) / first) * 100 : 0;
       const stats: Array<[string, string, string?]> = [
         ["Harga sekarang", `${formatPriceShort(last)} WETH`],
@@ -672,9 +1309,9 @@ function chartPanel(l: EnrichedLaunch): HTMLElement {
         s.appendChild(el("div", `chart-stat-v${cls ? " " + cls : ""}`, v));
         statsBox.appendChild(s);
       }
-      body.appendChild(buildChartSvg(pts));
+      body.appendChild(buildCandleSvg(candles, { log: candleLog }));
       body.appendChild(el("div", "muted chart-note",
-        `${data.trades} trade · dari blok ${data.launchBlock.toString()} · harga dari event Swap di chain`));
+        `${data.trades} trade · ${candles.length} candle · dari blok ${data.launchBlock.toString()} · harga dari event Swap di chain`));
     } catch (err) {
       statsBox.innerHTML = "";
       body.innerHTML = "";
@@ -710,21 +1347,55 @@ function tradePanel(l: EnrichedLaunch): HTMLElement {
     dirRow.append(buyBtn, sellBtn);
     wrap.appendChild(dirRow);
     let direction: "buy" | "sell" = "buy";
-    buyBtn.onclick = () => { direction = "buy"; buyBtn.classList.add("active"); sellBtn.classList.remove("active"); amountLabel.textContent = `Amount (${quoteSymbol})`; updateQuote(); };
-    sellBtn.onclick = () => { direction = "sell"; sellBtn.classList.add("active"); buyBtn.classList.remove("active"); amountLabel.textContent = `Amount (${baseSymbol})`; updateQuote(); };
-
+    // Token balance (sell side) loads lazily; WETH balance is cached in state.
+    let tokenBalance: bigint | null = null;
     const amountLabel = el("label", "", `Amount (${quoteSymbol})`);
     const amountInput = el("input") as HTMLInputElement;
     amountInput.type = "text";
     amountInput.inputMode = "decimal";
     amountInput.placeholder = "0.0";
-    const slipLabel = el("label", "", "Slippage (bps, 100 = 1%)");
+    const balRow = el("div", "balance-row");
+    balRow.appendChild(el("span", "muted", "Balance"));
+    const balVal = el("span", "balance-val", "…");
+    balRow.appendChild(balVal);
+    const maxBtn = el("button", "btn text", "MAX") as HTMLButtonElement;
+    maxBtn.onclick = () => {
+      const bal = direction === "buy" ? state.wethBalance : tokenBalance;
+      if (bal === null) return;
+      amountInput.value = formatUnits(bal, direction === "buy" ? 18 : l.meta!.decimals);
+      void updateQuote();
+    };
+    balRow.appendChild(maxBtn);
+    async function refreshBalRow(): Promise<void> {
+      try {
+        if (direction === "buy") {
+          balVal.textContent = `${fmtAmount(state.wethBalance, 18)} WETH`;
+        } else {
+          if (!state.account) { balVal.textContent = "Connect a wallet to see your balance."; return; }
+          if (tokenBalance === null) tokenBalance = await getTokenBalance(l.token, state.account);
+          balVal.textContent = `${fmtAmount(tokenBalance, l.meta!.decimals)} ${l.meta!.symbol}`;
+        }
+      } catch { balVal.textContent = "Could not load balance."; }
+    }
+    buyBtn.onclick = () => { direction = "buy"; buyBtn.classList.add("active"); sellBtn.classList.remove("active"); amountLabel.textContent = `Amount (${quoteSymbol})`; void refreshBalRow(); updateQuote(); };
+    sellBtn.onclick = () => { direction = "sell"; sellBtn.classList.add("active"); buyBtn.classList.remove("active"); amountLabel.textContent = `Amount (${baseSymbol})`; void refreshBalRow(); updateQuote(); };
+    void refreshBalRow();
+
+    // Slippage is real: it feeds planCurveSwap (minimumAmountOut) and the
+    // pool min-out. The input is in %; state keeps basis points (1% = 100 bps).
+    const slipLabel = el("label", "", "Slippage (%)");
     const slipInput = el("input") as HTMLInputElement;
     slipInput.type = "number";
-    slipInput.value = String(state.slippageBps);
-    slipInput.min = "1";
-    slipInput.max = "5000";
-    slipInput.onchange = () => { state.slippageBps = Math.max(1, Math.min(5000, Number(slipInput.value) || 100)); updateQuote(); };
+    slipInput.value = String(state.slippageBps / 100);
+    slipInput.min = "0.1";
+    slipInput.max = "50";
+    slipInput.step = "0.1";
+    slipInput.onchange = () => {
+      const pct = Number(slipInput.value) || 1;
+      state.slippageBps = Math.max(10, Math.min(5000, Math.round(pct * 100)));
+      slipInput.value = String(state.slippageBps / 100);
+      updateQuote();
+    };
 
     const quoteBox = el("div", "quote-box muted", "Enter an amount to see a live quote.");
     const execBtn = el("button", "btn primary", "Get quote") as HTMLButtonElement;
@@ -854,7 +1525,7 @@ function tradePanel(l: EnrichedLaunch): HTMLElement {
       }
     };
 
-    wrap.append(amountLabel, amountInput, slipLabel, slipInput, quoteBox, execBtn, resultBox);
+    wrap.append(amountLabel, amountInput, balRow, slipLabel, slipInput, quoteBox, execBtn, resultBox);
   } else if (status === 2) {
     wrap.appendChild(el("div", "warn", "This curve is ready to graduate. Graduation migrates liquidity to the pool and is permissionless."));
     const gBtn = el("button", "btn primary", "Graduate (migrate to pool)") as HTMLButtonElement;
@@ -905,6 +1576,45 @@ function poolTradePanel(l: EnrichedLaunch, pool: Address): HTMLElement {
   amountInput.type = "text";
   amountInput.inputMode = "decimal";
   amountInput.placeholder = "0.0";
+  const balRow = el("div", "balance-row");
+  balRow.appendChild(el("span", "muted", "Balance"));
+  const balVal = el("span", "balance-val", "…");
+  balRow.appendChild(balVal);
+  let poolTokenBalance: bigint | null = null;
+  const maxBtn = el("button", "btn text", "MAX") as HTMLButtonElement;
+  maxBtn.onclick = () => {
+    const bal = direction === "buy" ? state.ethBalance : poolTokenBalance;
+    if (bal === null) return;
+    amountInput.value = formatUnits(bal, direction === "buy" ? 18 : l.meta!.decimals);
+    void updateQuote();
+  };
+  balRow.appendChild(maxBtn);
+  async function refreshPoolBalRow(): Promise<void> {
+    try {
+      if (direction === "buy") {
+        balVal.textContent = `${fmtAmount(state.ethBalance, 18)} ETH`;
+      } else {
+        if (!state.account) { balVal.textContent = "Connect a wallet to see your balance."; return; }
+        if (poolTokenBalance === null) poolTokenBalance = await getTokenBalance(l.token, state.account);
+        balVal.textContent = `${fmtAmount(poolTokenBalance, l.meta!.decimals)} ${l.meta!.symbol}`;
+      }
+    } catch { balVal.textContent = "Could not load balance."; }
+  }
+  void refreshPoolBalRow();
+  // Slippage is real here too: it feeds the pool minimum-out (minOut).
+  const slipLabel = el("label", "", "Slippage (%)");
+  const slipInput = el("input") as HTMLInputElement;
+  slipInput.type = "number";
+  slipInput.value = String(state.slippageBps / 100);
+  slipInput.min = "0.1";
+  slipInput.max = "50";
+  slipInput.step = "0.1";
+  slipInput.onchange = () => {
+    const pct = Number(slipInput.value) || 1;
+    state.slippageBps = Math.max(10, Math.min(5000, Math.round(pct * 100)));
+    slipInput.value = String(state.slippageBps / 100);
+    updateQuote();
+  };
   const quoteBox = el("div", "quote-box muted", "Enter an ETH amount to see a live pool quote.");
   const execBtn = el("button", "btn primary", "Get quote") as HTMLButtonElement;
   const resultBox = el("div", "result");
@@ -919,6 +1629,7 @@ function poolTradePanel(l: EnrichedLaunch, pool: Address): HTMLElement {
     amountLabel.textContent = "Buy amount (ETH)";
     lastPlan = null;
     execBtn.textContent = "Get quote";
+    void refreshPoolBalRow();
     void updateQuote();
   };
   sellBtn.onclick = () => {
@@ -928,6 +1639,7 @@ function poolTradePanel(l: EnrichedLaunch, pool: Address): HTMLElement {
     amountLabel.textContent = `Sell amount (${l.meta!.symbol})`;
     lastPlan = null;
     execBtn.textContent = "Get quote";
+    void refreshPoolBalRow();
     void updateQuote();
   };
 
@@ -953,7 +1665,7 @@ function poolTradePanel(l: EnrichedLaunch, pool: Address): HTMLElement {
         lastMinOut = minOut(q.amountOut, state.slippageBps);
         quoteBox.innerHTML = "";
         quoteBox.appendChild(el("div", "", `Expected out: ${fmtAmount(q.amountOut, outMeta.decimals)} ${outMeta.symbol}`));
-        quoteBox.appendChild(el("div", "", `Minimum out (${state.slippageBps} bps slippage): ${fmtAmount(lastMinOut, outMeta.decimals)} ${outMeta.symbol}`));
+        quoteBox.appendChild(el("div", "", `Minimum out (${(state.slippageBps / 100).toFixed(1)}% slippage): ${fmtAmount(lastMinOut, outMeta.decimals)} ${outMeta.symbol}`));
         execBtn.textContent = "Preview & execute";
       } else {
         const amountIn = parseUnits(raw, l.meta!.decimals);
@@ -962,7 +1674,7 @@ function poolTradePanel(l: EnrichedLaunch, pool: Address): HTMLElement {
         lastMinOut = minOut(q.amountOut, state.slippageBps);
         quoteBox.innerHTML = "";
         quoteBox.appendChild(el("div", "", `Expected out: ${fmtAmount(q.amountOut, 18)} WETH`));
-        quoteBox.appendChild(el("div", "", `Minimum out (${state.slippageBps} bps slippage): ${fmtAmount(lastMinOut, 18)} WETH`));
+        quoteBox.appendChild(el("div", "", `Minimum out (${(state.slippageBps / 100).toFixed(1)}% slippage): ${fmtAmount(lastMinOut, 18)} WETH`));
         execBtn.textContent = "Preview & execute";
       }
     } catch (err) {
@@ -1040,7 +1752,7 @@ function poolTradePanel(l: EnrichedLaunch, pool: Address): HTMLElement {
     execBtn.textContent = "Get quote";
   };
 
-  wrap.append(amountLabel, amountInput, quoteBox, execBtn, resultBox);
+  wrap.append(amountLabel, amountInput, balRow, slipLabel, slipInput, quoteBox, execBtn, resultBox);
   return wrap;
 }
 
@@ -1056,10 +1768,14 @@ async function renderDetail(curve: string): Promise<void> {
     return;
   }
   try { history.replaceState(null, "", `#detail/${curve}`); } catch { /* non-fatal */ }
+  recordRecent(curve);
+  renderRecent();
   const back = el("button", "btn", "← Back to Discover") as HTMLButtonElement;
-  back.onclick = () => { try { history.replaceState(null, "", "#discover"); } catch { /* non-fatal */ } showView("discover"); };
+  back.onclick = () => { try { history.replaceState(null, "", "#discover"); } catch { /* non-fatal */ } showView("discover"); ensureBackgroundStarted(); };
   view.appendChild(back);
 
+  // Meta + curve state load in parallel (they were sequential). The chart
+  // scan and the holders scan start right after, in parallel with each other.
   if (!launch.meta || !launch.curveData) {
     const loadingBox = el("div", "");
     const loadingSkeleton = el("div", "skeleton");
@@ -1068,9 +1784,16 @@ async function renderDetail(curve: string): Promise<void> {
     loadingBox.appendChild(el("div", "muted", "Loading launch data from chain…"));
     view.appendChild(loadingBox);
     try {
-      launch.meta = await getTokenMeta(launch.token);
-      launch.curveData = await getCurveFull(launch.curve);
+      const [meta, curveData] = await Promise.all([
+        getTokenMeta(launch.token),
+        getCurveFull(launch.curve),
+      ]);
+      launch.meta = meta;
+      launch.curveData = curveData;
       launch.price = priceFromSqrtPrice(launch.curveData.state.sqrtPrice, launch.meta.decimals, 18);
+      // The "Recently viewed" chip rendered above showed the raw address
+      // (no symbol yet) — re-render now that the symbol is known.
+      renderRecent();
     } catch (err) {
       loadingBox.remove();
       view.appendChild(el("div", "error", `Failed to load: ${friendlyErrorMessage(err)}`));
@@ -1083,71 +1806,296 @@ async function renderDetail(curve: string): Promise<void> {
   const cf = l.curveData!;
   const st = cf.state;
 
-  const title = el("h2", "", `${meta.name} (${meta.symbol})`);
-  view.appendChild(title);
-  const badge = el("span", `badge status-${st.status}`, curveStatusLabel(st.status));
-  view.appendChild(badge);
+  // Holders scan starts now, in parallel with the chart — both fill in
+  // their panels when they land (stats header + Holders tab).
+  const holdersLoad: Promise<{ count: number; top: Array<{ address: string; balance: bigint }>; truncated: boolean; scannedTo: bigint } | { error: string }> =
+    scanTokenTransfers(l.token, l.blockNumber)
+      .then((res) => ({ ...computeHolders(res.transfers, l.curve), truncated: res.truncated, scannedTo: res.scannedTo }))
+      .catch((err: unknown) => ({ error: friendlyErrorMessage(err) }));
 
-  const info = el("div", "panel");
-  const rows: Array<[string, HTMLElement | string]> = [
-    ["Token", explorerLink(l.token)],
-    ["Curve", explorerLink(l.curve)],
-    ["Creator", explorerLink(l.creator)],
-    ["Config", `#${l.configId.toString()}`],
-    ["Created", `block ${l.blockNumber.toString()}`],
-    ["Price", `${l.price ?? "…"} WETH per ${meta.symbol}`],
-    ["Base reserve", `${fmtAmount(st.baseReserve, meta.decimals)} ${meta.symbol}`],
-    ["Quote reserve", `${fmtAmount(st.quoteReserve, 18)} WETH`],
-    ["Current fee", `${st.currentFeeBps} bps (dynamic ${st.currentDynamicFeeBps} bps)`],
-    ["Migration target", `${fmtAmount(cf.progress.target, 18)} WETH raised`],
-    ["Migration progress", `${(cf.progress.progressBps / 100).toFixed(1)}%`],
-    ["Fee vault", explorerLink(st.feeVault)],
-  ];
-  if (st.status === 3) rows.push(["Canonical pool", explorerLink(st.canonicalPool)]);
-  for (const [k, v] of rows) {
-    const r = el("div", "row");
-    r.appendChild(el("span", "k", k));
-    const val = el("span", "v");
-    if (typeof v === "string") val.textContent = v; else val.appendChild(v);
-    r.appendChild(val);
-    info.appendChild(r);
-  }
-  const bar = el("div", "bar");
-  const fill = el("div", "bar-fill");
-  fill.style.width = `${Math.min(100, cf.progress.progressBps / 100)}%`;
-  bar.appendChild(fill);
-  info.appendChild(bar);
-  view.appendChild(info);
-
-  view.appendChild(chartPanel(l));
-
-  if (state.account) {
-    const balBox = el("div", "panel");
-    balBox.appendChild(el("h3", "", "Your balances"));
+  // Stats header.
+  const header = el("div", "panel detail-header");
+  const idBox = el("div", "detail-id");
+  idBox.appendChild(tokenTile(l, "lg"));
+  const names = el("div", "");
+  const titleRow = el("div", "detail-title-row");
+  titleRow.appendChild(el("div", "detail-symbol", `$${meta.symbol}`));
+  titleRow.appendChild(el("span", `badge status-${st.status}`, curveStatusLabel(st.status)));
+  names.appendChild(titleRow);
+  names.appendChild(el("div", "muted", meta.name));
+  const addrRow = el("div", "detail-addr-row");
+  addrRow.appendChild(el("span", "addr", shortAddr(l.token)));
+  const copyBtn = el("button", "btn text", "Copy") as HTMLButtonElement;
+  copyBtn.onclick = async () => {
     try {
-      const [tokBal, ethBal, wethBal] = await Promise.all([
-        getTokenBalance(l.token, state.account),
-        getEthBalance(state.account),
-        getTokenBalance(WETH, state.account),
-      ]);
-      const rows2: Array<[string, string]> = [
-        ["ETH", fmtAmount(ethBal, 18)],
-        ["WETH", fmtAmount(wethBal, 18)],
-        [meta.symbol, fmtAmount(tokBal, meta.decimals)],
-      ];
-      for (const [k, v] of rows2) {
-        const r = el("div", "row");
-        r.appendChild(el("span", "k", k));
-        r.appendChild(el("span", "v", v));
-        balBox.appendChild(r);
-      }
-    } catch (err) {
-      balBox.appendChild(el("div", "error", `Could not load balances: ${friendlyErrorMessage(err)}`));
-    }
-    view.appendChild(balBox);
+      await navigator.clipboard.writeText(l.token);
+      copyBtn.textContent = "Disalin ✓";
+      setTimeout(() => { copyBtn.textContent = "Copy"; }, 2000);
+    } catch { copyBtn.textContent = "Gagal menyalin"; }
+  };
+  addrRow.appendChild(copyBtn);
+  const expLink = explorerLink(l.token, "Explorer");
+  expLink.className = "btn text";
+  expLink.insertAdjacentHTML("afterbegin", ICON_EXTERNAL_LINK);
+  addrRow.appendChild(expLink);
+  names.appendChild(addrRow);
+  idBox.appendChild(names);
+  header.appendChild(idBox);
+  const stats = el("div", "detail-stats");
+  const mcap = launchMcap(l);
+  const chg = launchChange24h(l);
+  const day = launchDayStats(l);
+  const fuelPct = cf.progress.progressBps / 100;
+  const statDefs: Array<[string, string, string?]> = [
+    ["Price", l.price ? `${formatPriceShort(Number.parseFloat(l.price))} WETH` : "…"],
+    ["Market cap", mcap === null ? "…" : `${fmtEthCompact(mcap)} ETH`],
+    ["24h", chg === null ? "—" : formatPercentChange(chg), chg === null ? undefined : chg >= 0 ? "chart-up" : "chart-down"],
+    ["Vol 24h", day ? `${fmtEthCompact(day.volumeWeth)} ETH` : "…"],
+    ["Holders", "…"],
+    ["Fuel", `${fuelPct.toFixed(1)}%`],
+  ];
+  let holdersValue: HTMLElement | null = null;
+  let volValue: HTMLElement | null = null;
+  for (const [k, v, cls] of statDefs) {
+    const cell = el("div", "detail-stat");
+    cell.appendChild(el("div", "chart-stat-k", k));
+    const val = el("div", `chart-stat-v${cls ? " " + cls : ""}`, v);
+    cell.appendChild(val);
+    if (k === "Holders") holdersValue = val;
+    if (k === "Vol 24h") volValue = val;
+    stats.appendChild(cell);
   }
+  header.appendChild(stats);
+  view.appendChild(header);
+  // Vol 24h comes from the home day-stats scan when it has landed; until
+  // then use this token's own trade history (same 24h window, real swaps).
+  if (!day && volValue) {
+    void getDetailChartData(l)
+      .then((data) => {
+        if (!volValue) return;
+        const cutoff = Date.now() - DAY_MS;
+        const vol = data.tradesList
+          .filter((t) => t.timeMs >= cutoff)
+          .reduce((s, t) => s + (t.baseForQuote ? Number(t.amountOut) : Number(t.amountIn)) / 1e18, 0);
+        volValue.textContent = `${fmtEthCompact(vol)} ETH`;
+      })
+      .catch(() => { /* keep "…" */ });
+  }
+  void holdersLoad.then((res) => {
+    if (!holdersValue) return;
+    if ("error" in res) {
+      holdersValue.textContent = "—";
+      return;
+    }
+    holdersValue.textContent = res.truncated ? `${res.count}+` : String(res.count);
+    holdersValue.title = res.truncated
+      ? `Partial count — transfers scanned back to block ${res.scannedTo.toString()} only`
+      : "Holders with a non-zero balance (curve contract excluded)";
+  });
 
-  view.appendChild(tradePanel(l));
+  // Main grid: chart (left) + Status / Trade (right).
+  const grid = el("div", "detail-grid");
+  const leftCol = el("div", "detail-left");
+  leftCol.appendChild(chartPanel(l));
+  grid.appendChild(leftCol);
+  const rightCol = el("div", "detail-right");
+  rightCol.appendChild(statusPanel(l));
+  rightCol.appendChild(tradePanel(l));
+  grid.appendChild(rightCol);
+  view.appendChild(grid);
+
+  // Tabs: Trades / Holders / Tech sheet.
+  view.appendChild(detailTabs(l, holdersLoad));
+}
+
+/** Status panel: fuel gauge, graduation state, pool link when graduated. */
+function statusPanel(l: EnrichedLaunch): HTMLElement {
+  const wrap = el("div", "panel");
+  const head = el("div", "chart-head");
+  head.appendChild(el("h3", "", "Status"));
+  head.appendChild(el("span", `badge status-${l.curveData!.state.status}`, curveStatusLabel(l.curveData!.state.status)));
+  wrap.appendChild(head);
+  const fuelPct = l.curveData!.progress.progressBps / 100;
+  const fuelRow = el("div", "hero-fuel-row");
+  fuelRow.appendChild(el("span", "muted", "Fuel"));
+  fuelRow.appendChild(el("span", "hero-fuel-pct", `${fuelPct.toFixed(1)}%`));
+  wrap.appendChild(fuelRow);
+  wrap.appendChild(fuelSegments(fuelPct));
+  if (l.curveData!.state.status === 3) {
+    wrap.appendChild(el("div", "muted", "Trading on the pool:"));
+    const poolLine = el("div", "");
+    poolLine.appendChild(explorerLink(l.curveData!.state.canonicalPool, shortAddr(l.curveData!.state.canonicalPool)));
+    wrap.appendChild(poolLine);
+  } else {
+    wrap.appendChild(el("div", "muted", "Trading on the curve — graduation migrates liquidity to the pool."));
+  }
+  return wrap;
+}
+
+type HoldersResult =
+  | { count: number; top: Array<{ address: string; balance: bigint }>; truncated: boolean; scannedTo: bigint }
+  | { error: string };
+
+function detailTabs(
+  l: EnrichedLaunch,
+  holdersLoad: Promise<HoldersResult>,
+): HTMLElement {
+  const wrap = el("div", "panel detail-tabs");
+  const tabRow = el("div", "seg");
+  const body = el("div", "detail-tab-body");
+  const tabs = [
+    { id: "trades", label: "Trades" },
+    { id: "holders", label: "Holders" },
+    { id: "tech", label: "Tech sheet" },
+  ] as const;
+  let active: (typeof tabs)[number]["id"] = "trades";
+  const btns = new Map<string, HTMLButtonElement>();
+  for (const t of tabs) {
+    const b = el("button", `btn seg-btn${t.id === active ? " active" : ""}`, t.label) as HTMLButtonElement;
+    b.onclick = () => {
+      active = t.id;
+      for (const [id, bb] of btns) bb.classList.toggle("active", id === t.id);
+      void loadTab();
+    };
+    btns.set(t.id, b);
+    tabRow.appendChild(b);
+  }
+  wrap.appendChild(tabRow);
+  wrap.appendChild(body);
+
+  async function loadTab(): Promise<void> {
+    if (active === "trades") {
+      body.innerHTML = "";
+      body.appendChild(el("div", "muted", "Loading trades…"));
+      try {
+        const data = await getDetailChartData(l);
+        const trades = [...data.tradesList].sort((a, b) => Number(b.block - a.block) || b.logIndex - a.logIndex);
+        body.innerHTML = "";
+        if (trades.length === 0) {
+          body.appendChild(el("div", "muted", "Belum ada trade."));
+          return;
+        }
+        body.appendChild(el("div", "muted", `${trades.length} trade`));
+        const scroll = el("div", "table-scroll");
+        const table = document.createElement("table");
+        table.className = "trades-table";
+        const thead = document.createElement("thead");
+        const headRow = document.createElement("tr");
+        for (const h of ["Age", "Side", "Trader", "ETH", "Tokens", "Price"]) {
+          headRow.appendChild(el("th", "", h));
+        }
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        const tbody = document.createElement("tbody");
+        table.appendChild(tbody);
+        scroll.appendChild(table);
+        body.appendChild(scroll);
+        const nowMs = state.chainHead?.timeMs ?? Date.now();
+        let shown = 0;
+        const moreBtn = el("button", "btn", "Load more trades") as HTMLButtonElement;
+        const renderPage = (): void => {
+          const page = trades.slice(shown, shown + TRADES_PAGE_SIZE);
+          for (const t of page) {
+            const tr = document.createElement("tr");
+            tr.appendChild(el("td", "", formatAge(t.timeMs, nowMs)));
+            const sideCell = el("td", "", t.baseForQuote ? "Sell" : "Buy");
+            sideCell.className = t.baseForQuote ? "chart-down" : "chart-up";
+            tr.appendChild(sideCell);
+            const traderCell = document.createElement("td");
+            traderCell.appendChild(explorerLink(t.trader));
+            tr.appendChild(traderCell);
+            const ethAmount = t.baseForQuote ? t.amountOut : t.amountIn;
+            tr.appendChild(el("td", "", fmtAmount(ethAmount, 18)));
+            const tokAmount = t.baseForQuote ? t.amountIn : t.amountOut;
+            tr.appendChild(el("td", "", fmtAmount(tokAmount, l.meta!.decimals)));
+            tr.appendChild(el("td", "", formatPriceShort(t.price)));
+            tbody.appendChild(tr);
+          }
+          shown += page.length;
+          moreBtn.classList.toggle("hidden", shown >= trades.length);
+        };
+        moreBtn.onclick = renderPage;
+        renderPage();
+        body.appendChild(moreBtn);
+      } catch (err) {
+        body.innerHTML = "";
+        showError(body, err);
+      }
+      return;
+    }
+    if (active === "holders") {
+      body.innerHTML = "";
+      body.appendChild(el("div", "muted", "Loading holders…"));
+      const res = await holdersLoad;
+      body.innerHTML = "";
+      if ("error" in res) {
+        showError(body, new Error(res.error));
+        return;
+      }
+      if (res.count === 0) {
+        body.appendChild(el("div", "muted", "No holders yet."));
+        return;
+      }
+      if (res.truncated) {
+        body.appendChild(el("div", "muted",
+          `Partial list — transfers scanned back to block ${res.scannedTo.toString()} only; older holders are not counted.`));
+      }
+      body.appendChild(el("div", "muted", `${res.count} holder${res.count === 1 ? "" : "s"} (curve contract excluded)`));
+      const scroll = el("div", "table-scroll");
+      const table = document.createElement("table");
+      table.className = "trades-table";
+      const thead = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      for (const h of ["Holder", "Balance"]) {
+        headRow.appendChild(el("th", "", h));
+      }
+      thead.appendChild(headRow);
+      table.appendChild(thead);
+      const tbody = document.createElement("tbody");
+      for (const h of res.top.slice(0, 50)) {
+        const tr = document.createElement("tr");
+        const addrCell = document.createElement("td");
+        addrCell.appendChild(explorerLink(h.address as Address));
+        tr.appendChild(addrCell);
+        tr.appendChild(el("td", "", `${fmtAmount(h.balance, l.meta!.decimals)} ${l.meta!.symbol}`));
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      scroll.appendChild(table);
+      body.appendChild(scroll);
+      return;
+    }
+    // Tech sheet.
+    body.innerHTML = "";
+    const cf = l.curveData!;
+    const st = cf.state;
+    const rows: Array<[string, HTMLElement | string]> = [
+      ["Token", explorerLink(l.token)],
+      ["Curve", explorerLink(l.curve)],
+      ["Creator", explorerLink(l.creator)],
+      ["Config", `#${l.configId.toString()}`],
+      ["Launch block", l.blockNumber.toString()],
+      ["Total supply", `${fmtAmount(l.meta!.totalSupply, l.meta!.decimals)} ${l.meta!.symbol}`],
+      ["Decimals", String(l.meta!.decimals)],
+      ["Current fee", `${st.currentFeeBps} bps (dynamic ${st.currentDynamicFeeBps} bps)`],
+      ["Base reserve", `${fmtAmount(st.baseReserve, l.meta!.decimals)} ${l.meta!.symbol}`],
+      ["Quote reserve", `${fmtAmount(st.quoteReserve, 18)} WETH`],
+      ["Migration target", `${fmtAmount(cf.progress.target, 18)} WETH raised`],
+      ["Fee vault", explorerLink(st.feeVault)],
+      ["Metadata URI", l.metadataURI || "(empty)"],
+    ];
+    if (st.status === 3) rows.push(["Canonical pool", explorerLink(st.canonicalPool)]);
+    for (const [k, v] of rows) {
+      const r = el("div", "row");
+      r.appendChild(el("span", "k", k));
+      const val = el("span", "v");
+      if (typeof v === "string") val.textContent = v; else val.appendChild(v);
+      r.appendChild(val);
+      body.appendChild(r);
+    }
+  }
+  void loadTab();
+  return wrap;
 }
 
 // ---------------------------------------------------------------------------
@@ -1282,6 +2230,7 @@ async function handleCreate(): Promise<void> {
           name,
           symbol,
           decimals: c.config.tokenDecimals,
+          totalSupply: c.config.totalSupply,
         });
         resultBox.appendChild(el("div", "ok", `Launch created! Token ${shortAddr(created.token)} · Curve ${shortAddr(created.curve)}`));
         const openBtn = el("button", "btn", "Open launch") as HTMLButtonElement;
@@ -1345,6 +2294,28 @@ async function verifyChainStatus(): Promise<void> {
   }
 }
 
+/** Delay before verifying the chain on a deep-linked detail (ms) — long enough for the detail's own reads to go first. */
+const DETAIL_VERIFY_DELAY_MS = 5000;
+
+let backgroundStarted = false;
+/**
+ * Heavy background jobs (launch enrichment, config preload, core verify,
+ * flight-log polling, bulk scan). Started once — at boot, or when the user
+ * returns to Discover after opening a deep-linked detail view. A shared
+ * detail link must load in seconds, not queue behind ~200 background calls
+ * on the rate-limited client (the chart used to take 60–90 s).
+ */
+function ensureBackgroundStarted(): void {
+  if (backgroundStarted) return;
+  backgroundStarted = true;
+  void pollFlightLog();
+  setInterval(() => void pollFlightLog(), FLIGHT_LOG_POLL_MS);
+  void enrichLaunches();
+  void loadConfigsForForm();
+  void verifyChainStatus();
+  void refreshLaunches();
+}
+
 async function boot(): Promise<void> {
   renderWallet();
   showView("discover");
@@ -1352,21 +2323,43 @@ async function boot(): Promise<void> {
   const themeBtn = $("#theme-toggle") as HTMLButtonElement;
   themeBtn.onclick = () => toggleTheme();
 
-  $("#tab-discover").onclick = () => { try { history.replaceState(null, "", "#discover"); } catch { /* non-fatal */ } showView("discover"); renderDiscover(); };
+  $("#tab-discover").onclick = () => { try { history.replaceState(null, "", "#discover"); } catch { /* non-fatal */ } showView("discover"); renderDiscover(); ensureBackgroundStarted(); };
   $("#tab-create").onclick = () => { try { history.replaceState(null, "", "#create"); } catch { /* non-fatal */ } showView("create"); void loadConfigsForForm(); };
   $("#tab-profile").onclick = () => { try { history.replaceState(null, "", "#profile"); } catch { /* non-fatal */ } showView("profile"); void renderProfile(); };
   $("#refresh-btn").onclick = () => void refreshLaunches();
-  $("#search-input").oninput = (e) => { state.search = (e.target as HTMLInputElement).value; renderDiscover(); };
-  for (const f of ["all", "active", "near", "graduated", "mine"] as const) {
-    $(`#filter-${f}`).onclick = () => {
-      state.filter = f;
-      for (const g of ["all", "active", "near", "graduated", "mine"] as const) {
-        $(`#filter-${g}`).classList.toggle("active", g === f);
+  // Header search: filters the Missions table live; Enter opens the first match.
+  const headerSearch = $("#header-search") as HTMLInputElement;
+  headerSearch.oninput = () => { state.search = headerSearch.value; renderDiscover(); };
+  headerSearch.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      const first = filteredLaunches()[0];
+      if (first) openDetail(first);
+    }
+  });
+  // "/" focuses the header search (unless already typing in a field).
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "/") return;
+    const target = e.target as HTMLElement | null;
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
+    e.preventDefault();
+    headerSearch.focus();
+  });
+  for (const t of ["trending", "new", "near", "graduated"] as const) {
+    $(`#mtab-${t}`).onclick = () => {
+      state.missionsTab = t;
+      for (const g of ["trending", "new", "near", "graduated"] as const) {
+        $(`#mtab-${g}`).classList.toggle("active", g === t);
       }
       renderDiscover();
     };
   }
+  $("#mine-toggle").onclick = () => {
+    state.mineOnly = !state.mineOnly;
+    $("#mine-toggle").classList.toggle("active", state.mineOnly);
+    renderDiscover();
+  };
   $("#create-submit").onclick = () => void handleCreate();
+  renderRecent();
 
   // Restore cached launches FIRST so the list paints instantly, before any
   // network call (verifyCore takes tens of seconds on the public RPC).
@@ -1374,39 +2367,49 @@ async function boot(): Promise<void> {
   state.launches = cache.launches;
   state.scanStatus = cache.launches.length > 0 ? `restored ${cache.launches.length} cached launches` : "idle";
   renderDiscover();
-  void enrichLaunches();
-
-  // Preload the launch configs on the fast client so the Create form's
-  // dropdown is already populated when the user opens it (it used to wait
-  // behind the bulk launch scan).
-  void loadConfigsForForm();
-
-  // Deep links: #discover (default), #create, #profile.
-  const hash = location.hash.replace("#", "");
-  if (hash === "create") { showView("create"); void loadConfigsForForm(); }
-  else if (hash === "profile") { showView("profile"); void renderProfile(); }
-
-  // Chain status — fire and forget: a slow or failed verify must never
-  // delay or block the configs and the launch scan.
-  void verifyChainStatus();
-
-  // Then refresh from chain.
-  await refreshLaunches();
+  void seedChainHead();
 
   // Deep link: #detail/<curve> opens a launch directly (shareable links).
-  const openHashDetail = (): void => {
+  const openHashDetail = async (): Promise<void> => {
     const h = location.hash;
     if (!h.startsWith("#detail/")) return;
     const curve = h.slice("#detail/".length);
-    const launch = state.launches.find((x) => x.curve.toLowerCase() === curve.toLowerCase());
+    let launch = state.launches.find((x) => x.curve.toLowerCase() === curve.toLowerCase());
+    if (!launch) {
+      // Not in the cache (fresh browser): one bulk scan on the separate
+      // scan client finds it without touching the interactive client.
+      await refreshLaunches();
+      launch = state.launches.find((x) => x.curve.toLowerCase() === curve.toLowerCase());
+    }
     if (launch) {
       state.detailCurve = launch.curve;
       showView("detail");
       void renderDetail(launch.curve);
     }
   };
-  openHashDetail();
-  window.addEventListener("hashchange", openHashDetail);
+  window.addEventListener("hashchange", () => void openHashDetail());
+
+  // Deep links: #discover (default), #create, #profile, #detail/<curve>.
+  const hash = location.hash.replace("#", "");
+  if (hash === "create") { showView("create"); void loadConfigsForForm(); ensureBackgroundStarted(); }
+  else if (hash === "profile") { showView("profile"); void renderProfile(); ensureBackgroundStarted(); }
+  else if (hash.startsWith("detail/")) {
+    // Deep link: open the detail FIRST. The heavy background jobs share
+    // the rate-limited client and used to queue the detail's own reads
+    // behind ~200 calls, so the chart took 60–90 s. They start when the
+    // user returns to Discover instead.
+    await openHashDetail();
+    if (state.view !== "detail") {
+      ensureBackgroundStarted();
+    } else {
+      // The chain-status bar would otherwise stay on "Connecting…" forever
+      // on a deep link (verify only runs with the background jobs). Run it
+      // once the detail's own reads are already in flight.
+      setTimeout(() => void verifyChainStatus(), DETAIL_VERIFY_DELAY_MS);
+    }
+  } else {
+    ensureBackgroundStarted();
+  }
 }
 
 document.addEventListener("DOMContentLoaded", () => void boot());
