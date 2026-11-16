@@ -64,6 +64,7 @@ import {
   type TransferEvent,
 } from "./ammora";
 import { friendlyErrorMessage } from "./errors";
+import { formatDisplayNumber } from "./format";
 import { ICON_COPY, ICON_EXTERNAL_LINK, ICON_SEARCH } from "./icons";
 import { initTheme, toggleTheme } from "./theme";
 import {
@@ -106,10 +107,10 @@ function explorerLink(address: string, label?: string): HTMLAnchorElement {
   return a;
 }
 
-function fmtAmount(raw: bigint, decimals: number, maxDp = 6): string {
-  const s = formatUnits(raw, decimals);
-  const [i, f = ""] = s.split(".");
-  return f ? `${i}.${f.slice(0, maxDp)}` : i;
+/** Token/ETH amount for display: exact bigint in, shared formatter out —
+ * thousands separators, no e-notation, subscript zeros when tiny. */
+function fmtAmount(raw: bigint, decimals: number): string {
+  return formatDisplayNumber(Number(formatUnits(raw, decimals)));
 }
 
 function esc(s: string): string {
@@ -136,17 +137,6 @@ const TRADES_PAGE_SIZE = 25;
 /** Recently-viewed tokens kept in localStorage (curve addresses, newest first). */
 const RECENT_KEY = "giwapad.recent.v1";
 const RECENT_MAX = 8;
-
-/** Compact ETH number: 698K, 2.19K, 27.48, 0.795. */
-function fmtEthCompact(v: number): string {
-  if (!Number.isFinite(v)) return "—";
-  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2).replace(/\.?0+$/, "")}M`;
-  if (v >= 1_000) return `${(v / 1_000).toFixed(2).replace(/\.?0+$/, "")}K`;
-  if (v >= 100) return v.toFixed(0);
-  if (v >= 1) return v.toFixed(2);
-  if (v > 0 && v < 0.001) return v.toExponential(1);
-  return v.toFixed(3).replace(/\.?0+$/, "");
-}
 
 /** Relative age from a wall-clock time, e.g. "15m", "3h", "2d". */
 function formatAge(timeMs: number, nowMs: number): string {
@@ -661,11 +651,11 @@ function renderTopCards(): void {
     card.appendChild(el("div", "muted", l.meta?.name ?? ""));
     const mcapRow = el("div", "row");
     mcapRow.appendChild(el("span", "k", "Market cap"));
-    mcapRow.appendChild(el("span", "v", `${fmtEthCompact(mcap)} ETH`));
+    mcapRow.appendChild(el("span", "v", `${formatDisplayNumber(mcap)} ETH`));
     card.appendChild(mcapRow);
     const poolRow = el("div", "row");
     poolRow.appendChild(el("span", "k", "Pool"));
-    poolRow.appendChild(el("span", "v", l.curveData ? `${fmtEthCompact(Number(formatUnits(l.curveData.state.quoteReserve, 18)))} ETH` : "…"));
+    poolRow.appendChild(el("span", "v", l.curveData ? `${formatDisplayNumber(Number(formatUnits(l.curveData.state.quoteReserve, 18)))} ETH` : "…"));
     card.appendChild(poolRow);
     grid.appendChild(card);
   }
@@ -708,7 +698,7 @@ function renderMissionsTable(): void {
     tokenCell.appendChild(tokenWrap);
     tr.appendChild(tokenCell);
     const mcap = launchMcap(l);
-    tr.appendChild(el("td", "", mcap === null ? "…" : `${fmtEthCompact(mcap)} ETH`));
+    tr.appendChild(el("td", "", mcap === null ? "…" : `${formatDisplayNumber(mcap)} ETH`));
     const chg = launchChange24h(l);
     const chgCell = el("td", "", chg === null ? "—" : formatPercentChange(chg));
     if (chg !== null) chgCell.className = chg >= 0 ? "chart-up" : "chart-down";
@@ -726,7 +716,7 @@ function renderMissionsTable(): void {
     // A missing entry means zero 24h trades once a scan has landed — show
     // "0", not a loading "…". ("…" only until the first scan lands.)
     const dayStatsLanded = state.dayStatsAt > 0;
-    tr.appendChild(el("td", "", s ? fmtEthCompact(s.volumeWeth) : dayStatsLanded ? "0" : "…"));
+    tr.appendChild(el("td", "", s ? formatDisplayNumber(s.volumeWeth) : dayStatsLanded ? "0" : "…"));
     tr.appendChild(el("td", "", s ? String(s.trades) : dayStatsLanded ? "0" : "…"));
     tr.appendChild(el("td", "", l.price ? `${formatPriceShort(Number.parseFloat(l.price))} WETH` : "…"));
     tr.appendChild(el("td", "", formatLaunchAge(l, nowMs)));
@@ -808,7 +798,7 @@ function renderFlightLog(): void {
     row.appendChild(el("span", "flight-symbol", `$${e.symbol}`));
     row.appendChild(el("span", "flight-amount", e.kind === "launch"
       ? (e.creator ? shortAddr(e.creator) : "")
-      : `${fmtEthCompact(e.amountWeth)} ETH`));
+      : `${formatDisplayNumber(e.amountWeth)} ETH`));
     row.appendChild(el("span", "muted flight-age", e.timeMs === null ? "—" : formatAge(e.timeMs, nowMs)));
     list.appendChild(row);
   }
@@ -1513,7 +1503,7 @@ function tradePanel(l: EnrichedLaunch): HTMLElement {
               resultBox.innerHTML = "";
               const short = needed - bal;
               resultBox.appendChild(el("div", "warn", `Your WETH balance (${fmtAmount(bal, 18)}) is short by ${fmtAmount(short, 18)} WETH. Wrap ETH first:`));
-              const wrapBtn = el("button", "btn", `Wrap ${fmtAmount(short, 18, 4)} ETH → WETH`) as HTMLButtonElement;
+              const wrapBtn = el("button", "btn", `Wrap ${fmtAmount(short, 18)} ETH → WETH`) as HTMLButtonElement;
               wrapBtn.onclick = async () => {
                 try {
                   wrapBtn.disabled = true;
@@ -1836,9 +1826,6 @@ async function renderDetail(curve: string): Promise<void> {
   try { history.replaceState(null, "", `#detail/${curve}`); } catch { /* non-fatal */ }
   recordRecent(curve);
   renderRecent();
-  const back = el("button", "btn", "← Back to Discover") as HTMLButtonElement;
-  back.onclick = () => { try { history.replaceState(null, "", "#discover"); } catch { /* non-fatal */ } showView("discover"); ensureBackgroundStarted(); };
-  view.appendChild(back);
 
   // Meta + curve state load in parallel (they were sequential). The chart
   // scan and the holders scan start right after, in parallel with each other.
@@ -1914,9 +1901,9 @@ async function renderDetail(curve: string): Promise<void> {
   const fuelPct = cf.progress.progressBps / 100;
   const statDefs: Array<[string, string, string?]> = [
     ["Price", l.price ? `${formatPriceShort(Number.parseFloat(l.price))} WETH` : "…"],
-    ["Market cap", mcap === null ? "…" : `${fmtEthCompact(mcap)} ETH`],
+    ["Market cap", mcap === null ? "…" : `${formatDisplayNumber(mcap)} ETH`],
     ["24h", chg === null ? "—" : formatPercentChange(chg), chg === null ? undefined : chg >= 0 ? "chart-up" : "chart-down"],
-    ["Vol 24h", day ? `${fmtEthCompact(day.volumeWeth)} ETH` : "…"],
+    ["Vol 24h", day ? `${formatDisplayNumber(day.volumeWeth)} ETH` : "…"],
     ["Holders", "…"],
     ["Fuel", `${fuelPct.toFixed(1)}%`],
   ];
@@ -1943,7 +1930,7 @@ async function renderDetail(curve: string): Promise<void> {
         const vol = data.tradesList
           .filter((t) => t.timeMs >= cutoff)
           .reduce((s, t) => s + (t.baseForQuote ? Number(t.amountOut) : Number(t.amountIn)) / 1e18, 0);
-        volValue.textContent = `${fmtEthCompact(vol)} ETH`;
+        volValue.textContent = `${formatDisplayNumber(vol)} ETH`;
       })
       .catch(() => { /* keep "…" */ });
   }
@@ -2241,8 +2228,7 @@ function renderConfigInfo(): void {
   }
   // Real values from the selected on-chain config — never copied from Tzero.
   // Supply is comma-grouped for readability (750,000,000,000,000, not 7.5e14).
-  const supplyParts = fmtAmount(c.config.totalSupply, c.config.tokenDecimals).split(".");
-  supply.textContent = supplyParts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (supplyParts[1] ? `.${supplyParts[1]}` : "");
+  supply.textContent = fmtAmount(c.config.totalSupply, c.config.tokenDecimals);
   fee.textContent = `${fmtAmount(c.config.poolCreationFee, 18)} ETH`;
   grad.textContent = "Graduates to pool";
   gradSub.textContent = c.config.migrationQuoteThreshold > 0n

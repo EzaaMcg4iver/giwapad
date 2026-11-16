@@ -4,6 +4,7 @@
  * (scanCurveChart); this module only turns points into a chart.
  */
 import type { ChartData, ChartPoint, TradeEvent } from "./ammora";
+import { formatDisplayNumber } from "./format";
 
 export type ChartRange = "24h" | "7d" | "all";
 
@@ -27,11 +28,9 @@ export const CHART_HEIGHT = 220;
 const CHART_PADDING = { left: 58, right: 10, top: 12, bottom: 26 } as const;
 const CHART_GRID_LINES = 4;
 
-/** Compact price label: 3 significant digits for tiny prices, trimmed otherwise. */
+/** Compact price label — the shared display formatter (never e-notation). */
 export function formatPriceShort(price: number): string {
-  if (!Number.isFinite(price) || price <= 0) return "0";
-  if (price >= 1) return price.toFixed(4).replace(/\.?0+$/, "");
-  return price.toPrecision(3);
+  return formatDisplayNumber(price);
 }
 
 /** Signed percent with two decimals, e.g. "+12.34%" or "-0.50%". */
@@ -86,6 +85,9 @@ export function buildChartSvg(
   svg.setAttribute("role", "img");
   svg.setAttribute("aria-label", "Price history chart");
   if (points.length === 0) return svg;
+  // TradingView convention: the line takes the period's direction — green
+  // when the last price is at or above the first, red when below.
+  svg.classList.add(points[points.length - 1].price >= points[0].price ? "chart-trend-up" : "chart-trend-down");
   const { left: padL, right: padR, top: padT, bottom: padB } = CHART_PADDING;
   const xs = points.map((p) => p.timeMs);
   const ys = points.map((p) => p.price);
@@ -334,18 +336,20 @@ export function buildCandleSvg(
     svg.appendChild(body);
   }
   const last = candles[candles.length - 1];
+  // Last-price line follows the last candle's direction (TradingView style).
+  const lastCls = last.close >= last.open ? "candle-up" : "candle-down";
   const lastLine = mk("line");
   lastLine.setAttribute("x1", String(padL));
   lastLine.setAttribute("x2", String(width - padR));
   lastLine.setAttribute("y1", String(Y(last.close)));
   lastLine.setAttribute("y2", String(Y(last.close)));
-  lastLine.setAttribute("class", "chart-lastline");
+  lastLine.setAttribute("class", `chart-lastline ${lastCls}`);
   svg.appendChild(lastLine);
   const lastLabel = mk("text");
   lastLabel.setAttribute("x", String(width - padR - 4));
   lastLabel.setAttribute("y", String(Y(last.close) - 5));
   lastLabel.setAttribute("text-anchor", "end");
-  lastLabel.setAttribute("class", "chart-lastlabel");
+  lastLabel.setAttribute("class", `chart-lastlabel ${lastCls}`);
   lastLabel.textContent = formatPriceShort(last.close);
   svg.appendChild(lastLabel);
   return svg;
