@@ -192,6 +192,24 @@
   All numbers come from live chain reads · Never enter a seed phrase or private key anywhere.
 </footer>
 
+  <!-- Launch review modal: the "Review before signing" step lives here only;
+       the Sign action is inside this dialog, never inline on the page. -->
+  <div id="launch-review-modal" class="modal-overlay hidden" role="presentation">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="launch-review-title">
+      <div class="modal-head">
+        <h2 id="launch-review-title">Review before signing</h2>
+        <button id="launch-review-x" type="button" class="icon-btn modal-x" aria-label="Close review">✕</button>
+      </div>
+      <div id="launch-review-body" class="modal-body"></div>
+      <div id="launch-review-warn" class="modal-warn"></div>
+      <div id="launch-review-status" class="modal-status"></div>
+      <div class="modal-actions">
+        <button id="launch-review-cancel" type="button" class="btn">Cancel</button>
+        <button id="launch-review-sign" type="button" class="btn primary">Sign &amp; create launch</button>
+      </div>
+    </div>
+  </div>
+
 <script src="./bundle.js"></script>
 </body>
 </html>

@@ -2530,7 +2530,141 @@ function initCreateForm(): void {
     refreshCreateImage();
     refreshMetadataURI();
   });
+  // Review modal close paths: X, Cancel, backdrop click. (Escape + focus
+  // trap live in openLaunchReviewModal's keydown handler.)
+  const reviewOverlay = $("#launch-review-modal");
+  reviewOverlay.addEventListener("click", (e) => {
+    if (e.target === reviewOverlay) closeLaunchReviewModal();
+  });
+  $("#launch-review-x").addEventListener("click", () => closeLaunchReviewModal());
+  $("#launch-review-cancel").addEventListener("click", () => closeLaunchReviewModal());
   refreshCreatePreview();
+}
+
+/* ------------------------------------------------------------------------- */
+/* Launch review modal: the "Review before signing" step lives in this      */
+/* dialog only. The Sign action is inside the modal, never inline on the    */
+/* page. Closes on Escape / backdrop click / Cancel / X; focus moves in on  */
+/* open, is trapped while open, and returns on close.                       */
+/* ------------------------------------------------------------------------- */
+
+let launchReviewReturnFocus: HTMLElement | null = null;
+let launchReviewKeyHandler: ((e: KeyboardEvent) => void) | null = null;
+let launchReviewBusy = false;
+
+function openLaunchReviewModal(): void {
+  const overlay = $("#launch-review-modal");
+  launchReviewReturnFocus = document.activeElement as HTMLElement | null;
+  overlay.classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+  const signBtn = $("#launch-review-sign") as HTMLButtonElement;
+  const cancelBtn = $("#launch-review-cancel") as HTMLButtonElement;
+  signBtn.disabled = false;
+  signBtn.classList.remove("hidden");
+  cancelBtn.disabled = false;
+  cancelBtn.textContent = "Cancel";
+  ($("#launch-review-status") as HTMLElement).innerHTML = "";
+  signBtn.focus();
+  launchReviewKeyHandler = (e: KeyboardEvent) => {
+    if (e.key === "Escape") { e.preventDefault(); closeLaunchReviewModal(); return; }
+    if (e.key !== "Tab") return;
+    const dlg = $("#launch-review-modal .modal") as HTMLElement;
+    const items = [...dlg.querySelectorAll<HTMLElement>("button, summary, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])")]
+      .filter((n) => !n.hasAttribute("disabled") && n.offsetParent !== null);
+    if (items.length === 0) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+  document.addEventListener("keydown", launchReviewKeyHandler);
+}
+
+function closeLaunchReviewModal(): void {
+  const overlay = $("#launch-review-modal");
+  if (overlay.classList.contains("hidden")) return;
+  // While a sign is in flight the outcome lives in this dialog — do not let
+  // the user dismiss it mid-flight and lose the result.
+  if (launchReviewBusy) return;
+  overlay.classList.add("hidden");
+  document.body.style.overflow = "";
+  if (launchReviewKeyHandler) {
+    document.removeEventListener("keydown", launchReviewKeyHandler);
+    launchReviewKeyHandler = null;
+  }
+  if (launchReviewReturnFocus && document.contains(launchReviewReturnFocus)) {
+    launchReviewReturnFocus.focus();
+  } else {
+    ($("#create-submit") as HTMLButtonElement).focus();
+  }
+}
+
+/** Truncate a long URI for display: start…end. */
+function truncateUri(uri: string): string {
+  if (uri.length <= 40) return uri;
+  return `${uri.slice(0, 24)}…${uri.slice(-12)}`;
+}
+
+async function copyText(text: string, btn: HTMLButtonElement): Promise<void> {
+  const done = () => {
+    const old = btn.textContent;
+    btn.textContent = "Copied ✓";
+    btn.disabled = true;
+    setTimeout(() => { btn.textContent = old; btn.disabled = false; }, 1500);
+  };
+  try {
+    await navigator.clipboard.writeText(text);
+    done();
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+      done();
+    } catch {
+      btn.textContent = "Copy failed";
+      setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+    }
+  }
+}
+
+/**
+ * Readable metadata-URI widget: never dump a long base64 data URI as plain
+ * text. Auto-built data: URIs show a byte count + Copy + a collapsible full
+ * text; hosted URIs show truncated with Copy.
+ */
+function metadataUriWidget(uri: string): HTMLElement {
+  const wrap = el("div", "uri-wrap");
+  if (!uri) { wrap.textContent = "(empty)"; return wrap; }
+  const copy = el("button", "btn copy-btn", "Copy") as HTMLButtonElement;
+  copy.type = "button";
+  copy.onclick = () => void copyText(uri, copy);
+  if (uri.startsWith("data:")) {
+    const line = el("div", "uri-line");
+    line.appendChild(el("span", "uri-label", `Auto-built metadata (${utf8Bytes(uri)} bytes)`));
+    line.appendChild(copy);
+    wrap.appendChild(line);
+    const det = document.createElement("details");
+    const sum = document.createElement("summary");
+    sum.textContent = "Show full metadata URI";
+    const pre = document.createElement("pre");
+    pre.className = "uri-full";
+    pre.textContent = uri;
+    det.append(sum, pre);
+    wrap.appendChild(det);
+    return wrap;
+  }
+  const line = el("div", "uri-line");
+  const txt = el("span", "uri-text", truncateUri(uri));
+  txt.title = uri;
+  line.append(txt, copy);
+  wrap.appendChild(line);
+  return wrap;
 }
 
 async function handleCreate(): Promise<void> {
@@ -2553,34 +2687,56 @@ async function handleCreate(): Promise<void> {
   }
   try {
     const preview = buildCreateLaunchTx(name, symbol, metadataURI, c.config.tokenDecimals, c.configId, c.config.poolCreationFee);
-    const prev = el("div", "preview");
-    prev.appendChild(el("div", "", "Review before signing in your wallet:"));
-    prev.appendChild(el("div", "", `Token: ${name} (${symbol}), ${c.config.tokenDecimals} decimals`));
-    prev.appendChild(el("div", "", `Config: #${c.configId.toString()} — hash ${shortAddr(c.configHash)}`));
-    prev.appendChild(el("div", "", `Factory: ${shortAddr(preview.factory)}`));
-    prev.appendChild(el("div", "", `Pool creation fee (msg.value): ${fmtAmount(preview.poolCreationFee, 18)} ETH`));
-    prev.appendChild(el("div", "", `Metadata URI: ${metadataURI || "(empty)"}`));
+    // Fill the review modal (replaces the old inline review box — the Sign
+    // action lives only in the dialog).
+    const body = $("#launch-review-body");
+    body.innerHTML = "";
+    for (const [k, v] of [
+      ["Token", `${name} (${symbol}), ${c.config.tokenDecimals} decimals`],
+      ["Config", `#${c.configId.toString()} — hash ${shortAddr(c.configHash)}`],
+      ["Factory", shortAddr(preview.factory)],
+      ["Pool creation fee (msg.value)", `${fmtAmount(preview.poolCreationFee, 18)} ETH`],
+    ] as const) {
+      const row = el("div", "row");
+      row.appendChild(el("span", "k", k));
+      row.appendChild(el("span", "v", v));
+      body.appendChild(row);
+    }
+    const uriRow = el("div", "row");
+    uriRow.appendChild(el("span", "k", "Metadata URI"));
+    uriRow.appendChild(metadataUriWidget(metadataURI));
+    body.appendChild(uriRow);
+    // Local-image warning, also inside the modal before Sign.
+    const warnBox = $("#launch-review-warn");
+    warnBox.innerHTML = "";
     if (createFile && !createLinkUrl) {
       // Honesty rule: a locally picked file has no public URL and cannot go
       // on-chain. Say so BEFORE the user confirms — never silently drop it.
       const w = el("div", "warn", "The image you picked only lives in this browser — it has no public URL, so this launch will NOT include it in the token metadata. Paste a public image link to include it, or launch without an image.");
       const fixBtn = el("button", "btn text", "Paste a public image link") as HTMLButtonElement;
       fixBtn.onclick = () => {
+        closeLaunchReviewModal();
         $("#create-link-wrap").classList.remove("hidden");
         ($("#create-image-link") as HTMLInputElement).focus();
       };
       w.appendChild(fixBtn);
-      prev.appendChild(w);
+      warnBox.appendChild(w);
     }
-    resultBox.appendChild(prev);
-    const goBtn = el("button", "btn primary", "Sign & create launch") as HTMLButtonElement;
-    resultBox.appendChild(goBtn);
-    goBtn.onclick = async () => {
+    const statusBox = $("#launch-review-status");
+    statusBox.innerHTML = "";
+    const signBtn = $("#launch-review-sign") as HTMLButtonElement;
+    const cancelBtn = $("#launch-review-cancel") as HTMLButtonElement;
+    const xBtn = $("#launch-review-x") as HTMLButtonElement;
+    signBtn.onclick = async () => {
       try {
-        goBtn.disabled = true;
-        resultBox.appendChild(el("div", "muted", "Sending createLaunch — confirm in your wallet…"));
+        launchReviewBusy = true;
+        signBtn.disabled = true;
+        cancelBtn.disabled = true;
+        xBtn.disabled = true;
+        signBtn.textContent = "Waiting for wallet…";
+        statusBox.appendChild(el("div", "muted", "Sending createLaunch — confirm in your wallet…"));
         const hash = await sendTx(preview.transaction);
-        resultBox.appendChild(el("div", "muted", `Tx sent: ${shortAddr(hash)} — waiting for confirmation…`));
+        statusBox.appendChild(el("div", "muted", `Tx sent: ${shortAddr(hash)} — waiting for confirmation…`));
         const created = await waitForLaunchCreated(hash, c.configId, c.configHash);
         // Show the new launch immediately — do NOT wait for the bulk scan
         // to reach its block before it becomes visible.
@@ -2599,7 +2755,7 @@ async function handleCreate(): Promise<void> {
           decimals: c.config.tokenDecimals,
           totalSupply: c.config.totalSupply,
         });
-        resultBox.appendChild(el("div", "ok", `Launch created! Token ${shortAddr(created.token)} · Curve ${shortAddr(created.curve)}`));
+        statusBox.appendChild(el("div", "ok", `Launch created! Token ${shortAddr(created.token)} · Curve ${shortAddr(created.curve)}`));
         const openBtn = el("button", "btn", "Open launch") as HTMLButtonElement;
         openBtn.onclick = () => {
           // Navigate straight to the detail view from the known addresses —
@@ -2609,10 +2765,22 @@ async function handleCreate(): Promise<void> {
           showView("detail");
           void renderDetail(created.curve);
         };
-        resultBox.appendChild(openBtn);
-      } catch (err) { showError(resultBox, err); }
-      goBtn.disabled = false;
+        statusBox.appendChild(openBtn);
+        launchReviewBusy = false;
+        signBtn.classList.add("hidden");
+        cancelBtn.disabled = false;
+        cancelBtn.textContent = "Close";
+        cancelBtn.focus();
+      } catch (err) {
+        launchReviewBusy = false;
+        showError(statusBox, err);
+        signBtn.disabled = false;
+        signBtn.textContent = "Sign & create launch";
+        cancelBtn.disabled = false;
+        xBtn.disabled = false;
+      }
     };
+    openLaunchReviewModal();
   } catch (err) {
     showError(resultBox, err);
   }
@@ -2627,6 +2795,9 @@ async function handleCreate(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function showView(name: "discover" | "create" | "detail" | "profile"): void {
+  // A view change dismisses the review modal (e.g. "Open launch" after a
+  // successful create) — its result lives in the new view, not behind it.
+  closeLaunchReviewModal();
   state.view = name;
   for (const v of ["discover", "create", "detail", "profile"] as const) {
     $("#view-" + v).classList.toggle("hidden", v !== name);
@@ -2732,9 +2903,11 @@ async function boot(): Promise<void> {
       if (first) openDetail(first);
     }
   });
-  // "/" focuses the header search (unless already typing in a field).
+  // "/" focuses the header search (unless already typing in a field, or the
+  // review modal is open — focus stays trapped in the dialog then).
   document.addEventListener("keydown", (e) => {
     if (e.key !== "/") return;
+    if (!$("#launch-review-modal").classList.contains("hidden")) return;
     const target = e.target as HTMLElement | null;
     if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
     e.preventDefault();
@@ -2768,9 +2941,11 @@ async function boot(): Promise<void> {
 
   // Deep link: #detail/<curve> opens a launch directly (shareable links).
   const openHashDetail = async (): Promise<void> => {
-    const h = location.hash;
-    if (!h.startsWith("#detail/")) return;
-    const curve = h.slice("#detail/".length);
+    // Tolerate "#/detail/…" as well as "#detail/…" — the "#/" hash-router
+    // form shows up in shared links, and the old code silently ignored it.
+    const h = location.hash.replace(/^#\/?/, "");
+    if (!h.startsWith("detail/")) return;
+    const curve = h.slice("detail/".length);
     let launch = state.launches.find((x) => x.curve.toLowerCase() === curve.toLowerCase());
     if (!launch) {
       // Not in the cache (fresh browser): one bulk scan on the separate
@@ -2787,7 +2962,8 @@ async function boot(): Promise<void> {
   window.addEventListener("hashchange", () => void openHashDetail());
 
   // Deep links: #discover (default), #create, #profile, #detail/<curve>.
-  const hash = location.hash.replace("#", "");
+  // A leading "/" after "#" is tolerated ("#/detail/…" shared links).
+  const hash = location.hash.replace(/^#\/?/, "");
   if (hash === "create") { showView("create"); void loadConfigsForForm(); ensureBackgroundStarted(); }
   else if (hash === "profile") { showView("profile"); void renderProfile(); ensureBackgroundStarted(); }
   else if (hash.startsWith("detail/")) {
