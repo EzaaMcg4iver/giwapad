@@ -2848,7 +2848,7 @@ async function verifyChainStatus(): Promise<void> {
     const v = await verifyCore();
     state.verifiedBlock = v.blockNumber;
     statusEl.innerHTML = "";
-    statusEl.appendChild(el("span", "ok", `Core verified at block ${v.blockNumber.toString()}`));
+    statusEl.appendChild(el("span", "ok-text", `Core verified at block ${v.blockNumber.toString()}`));
     statusEl.appendChild(el("span", "muted", " · Factory "));
     statusEl.appendChild(explorerLink(v.factory));
     statusEl.appendChild(el("span", "muted", " · Registry "));
@@ -2858,7 +2858,7 @@ async function verifyChainStatus(): Promise<void> {
     // configs and the launch list load independently. Short message plus a
     // retry — never a raw viem dump.
     statusEl.innerHTML = "";
-    statusEl.appendChild(el("span", "error", friendlyErrorMessage(err)));
+    statusEl.appendChild(el("span", "err-text", friendlyErrorMessage(err)));
     const retry = el("button", "btn", "↻ Retry") as HTMLButtonElement;
     retry.onclick = () => void verifyChainStatus();
     statusEl.appendChild(retry);
@@ -3034,7 +3034,7 @@ async function boot(): Promise<void> {
     if (state.view !== "detail") {
       ensureBackgroundStarted();
     } else {
-      // The chain-status bar would otherwise stay on "Connecting…" forever
+      // The footer status would otherwise stay on "Connecting…" forever
       // on a deep link (verify only runs with the background jobs). Run it
       // once the detail's own reads are already in flight.
       setTimeout(() => void verifyChainStatus(), DETAIL_VERIFY_DELAY_MS);
