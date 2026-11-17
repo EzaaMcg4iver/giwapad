@@ -53,6 +53,7 @@ import {
   buildNativePoolBuy,
   minOut,
   buildWrapTx,
+  buildUnwrapTx,
   curveStatusLabel,
   type Launch,
   type LaunchConfig,
@@ -230,6 +231,8 @@ const state = {
   detailCurve: null as string | null,
   /** Selected token for the standalone Swap page (curve address). */
   swapCurve: null as string | null,
+  /** Swap page in wrap mode: ETH <-> WETH (1:1, no launch). Null = launch pair. */
+  swapWrap: null as "wrap" | "unwrap" | null,
   slippageBps: 100,
   view: "discover" as "discover" | "create" | "detail" | "profile" | "swap",
   // Cached non-zero token holdings, keyed by token address (lowercase).
@@ -508,13 +511,23 @@ async function waitReceipt(hash: Hash) {
 // Discover
 // ---------------------------------------------------------------------------
 
-/** Market cap in WETH: current price × total supply. Null until price/supply are known. */
+/** Market cap in WETH: current price × CIRCULATING supply. Null until price/supply are known. */
 function launchMcap(l: EnrichedLaunch): number | null {
   if (!l.meta || !l.price) return null;
   const price = Number.parseFloat(l.price);
   if (!Number.isFinite(price) || price <= 0) return null;
-  const supply = Number(l.meta.totalSupply) / 10 ** l.meta.decimals;
-  if (!Number.isFinite(supply) || supply <= 0) return null;
+  // Circulating supply = totalSupply minus what the curve still holds.
+  // Price × totalSupply is the fully-diluted value — on a fresh launch the
+  // curve holds nearly the whole supply, so FDV is a joke headline (a
+  // 750,000 ETH "mcap" on 0.07 WETH of liquidity). Fall back to total
+  // supply only while the curve state is not loaded yet.
+  let supplyRaw = l.meta.totalSupply;
+  if (l.curveData) {
+    const circ = l.meta.totalSupply - l.curveData.state.baseReserve;
+    supplyRaw = circ > 0n ? circ : 0n;
+  }
+  const supply = Number(supplyRaw) / 10 ** l.meta.decimals;
+  if (!Number.isFinite(supply)) return null;
   return price * supply;
 }
 
@@ -704,9 +717,6 @@ function renderTopCards(): void {
     poolRow.appendChild(el("span", "k", "Pool"));
     poolRow.appendChild(el("span", "v", l.curveData ? `${formatDisplayNumber(Number(formatUnits(l.curveData.state.quoteReserve, 18)))} ETH` : "…"));
     card.appendChild(poolRow);
-    const swapBtn = el("button", "btn swap-action", "Swap") as HTMLButtonElement;
-    swapBtn.onclick = (e) => { e.stopPropagation(); openSwap(l); };
-    card.appendChild(swapBtn);
     grid.appendChild(card);
   }
   box.appendChild(grid);
@@ -774,9 +784,6 @@ function renderMissionsTable(): void {
     const tradeBtn = el("button", "btn primary table-trade", "Trade") as HTMLButtonElement;
     tradeBtn.onclick = (e) => { e.stopPropagation(); openDetail(l); };
     tradeCell.appendChild(tradeBtn);
-    const swapBtn = el("button", "btn table-trade", "Swap") as HTMLButtonElement;
-    swapBtn.onclick = (e) => { e.stopPropagation(); openSwap(l); };
-    tradeCell.appendChild(swapBtn);
     tr.appendChild(tradeCell);
     tbody.appendChild(tr);
   }
@@ -868,46 +875,77 @@ function renderDiscover(): void {
   renderFlightLog();
 }
 
-/** Compact launch card (Profile "Launch saya" grid). */
-function launchCard(l: EnrichedLaunch): HTMLElement {
-  const card = el("div", "card");
-  card.tabIndex = 0;
-  card.setAttribute("role", "button");
-  card.onclick = () => openDetail(l);
-  card.onkeydown = (e) => {
-    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDetail(l); }
-  };
-  const head = el("div", "card-head");
-  head.appendChild(el("div", "card-title", l.meta ? `${l.meta.name} (${l.meta.symbol})` : shortAddr(l.token)));
-  head.appendChild(el("span", `badge status-${l.curveData?.state.status ?? -1}`, l.curveData ? curveStatusLabel(l.curveData.state.status) : "Loading…"));
-  card.appendChild(head);
-  const rows: Array<[string, string]> = [
-    ["Token", shortAddr(l.token)],
-    ["Curve", shortAddr(l.curve)],
-    ["Creator", shortAddr(l.creator)],
-    ["Config", `#${l.configId.toString()}`],
-  ];
-  if (l.curveData && l.meta) {
-    rows.push(["Price", `${l.price ?? "…"} WETH / ${l.meta.symbol}`]);
-    rows.push(["Raised", `${fmtAmount(l.curveData.state.quoteReserve, 18)} WETH`]);
-    rows.push(["Graduation", `${(l.curveData.progress.progressBps / 100).toFixed(1)}%`]);
-  } else if (l.loadError) {
-    rows.push(["Note", `Could not load curve state: ${l.loadError}`]);
+/** "Launch saya" list (Profile) — the same table as the Discover Missions
+ * table, one row per launch instead of a card grid. Same data the cards
+ * showed: token, addresses, creator, config, price, raised, graduation,
+ * status. Row click (or Trade) opens the detail page. */
+function myLaunchesTable(mine: EnrichedLaunch[]): HTMLElement {
+  const scroll = el("div", "table-scroll");
+  const table = document.createElement("table");
+  table.className = "missions-table";
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const h of ["Token", "Token address", "Curve address", "Creator", "Config", "Price", "Raised", "Graduation", "Status", ""]) {
+    headRow.appendChild(el("th", "", h));
   }
-  for (const [k, v] of rows) {
-    const r = el("div", "row");
-    r.appendChild(el("span", "k", k));
-    r.appendChild(el("span", "v", v));
-    card.appendChild(r);
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  for (const l of mine) {
+    const tr = document.createElement("tr");
+    tr.className = "missions-row";
+    tr.tabIndex = 0;
+    tr.setAttribute("role", "button");
+    const open = () => openDetail(l);
+    tr.onclick = open;
+    tr.onkeydown = (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+    };
+    const tokenCell = document.createElement("td");
+    const tokenWrap = el("div", "table-token");
+    tokenWrap.appendChild(tokenTile(l, "sm"));
+    const names = el("div", "");
+    names.appendChild(el("div", "table-symbol", `$${l.meta?.symbol ?? shortAddr(l.token)}`));
+    names.appendChild(el("div", "muted table-name", l.meta?.name ?? ""));
+    tokenWrap.appendChild(names);
+    tokenCell.appendChild(tokenWrap);
+    tr.appendChild(tokenCell);
+    tr.appendChild(el("td", "addr", shortAddr(l.token)));
+    tr.appendChild(el("td", "addr", shortAddr(l.curve)));
+    tr.appendChild(el("td", "addr", shortAddr(l.creator)));
+    tr.appendChild(el("td", "", `#${l.configId.toString()}`));
+    tr.appendChild(el("td", "", l.price && l.meta ? `${formatPriceShort(Number.parseFloat(l.price))} WETH` : "…"));
+    tr.appendChild(el("td", "", l.curveData ? `${fmtAmount(l.curveData.state.quoteReserve, 18)} WETH` : "…"));
+    const gradCell = document.createElement("td");
+    if (l.curveData) {
+      const pct = l.curveData.progress.progressBps / 100;
+      gradCell.appendChild(fuelSegments(pct));
+      gradCell.appendChild(el("div", "muted fuel-pct", `${pct.toFixed(1)}%`));
+    } else {
+      gradCell.textContent = "…";
+    }
+    tr.appendChild(gradCell);
+    const statusCell = document.createElement("td");
+    if (l.curveData) {
+      statusCell.appendChild(el("span", `badge status-${l.curveData.state.status}`, curveStatusLabel(l.curveData.state.status)));
+    } else if (l.loadError) {
+      const err = el("span", "muted", "Error");
+      err.title = l.loadError;
+      statusCell.appendChild(err);
+    } else {
+      statusCell.appendChild(el("span", "badge status--1", "Loading…"));
+    }
+    tr.appendChild(statusCell);
+    const tradeCell = document.createElement("td");
+    const tradeBtn = el("button", "btn primary table-trade", "Trade") as HTMLButtonElement;
+    tradeBtn.onclick = (e) => { e.stopPropagation(); openDetail(l); };
+    tradeCell.appendChild(tradeBtn);
+    tr.appendChild(tradeCell);
+    tbody.appendChild(tr);
   }
-  if (l.curveData) {
-    const bar = el("div", "bar");
-    const fill = el("div", "bar-fill");
-    fill.style.width = `${Math.min(100, l.curveData.progress.progressBps / 100)}%`;
-    bar.appendChild(fill);
-    card.appendChild(bar);
-  }
-  return card;
+  table.appendChild(tbody);
+  scroll.appendChild(table);
+  return scroll;
 }
 
 let dayStatsRun = 0;
@@ -1211,8 +1249,8 @@ async function renderProfile(): Promise<void> {
     ? "Kamu belum membuat launch apa pun (dari launch yang sudah ditemukan sejauh ini)."
     : `${mine.length} launch dibuat oleh wallet ini.`);
   launchSec.appendChild(launchNote);
-  const grid = el("div", "grid");
-  launchSec.appendChild(grid);
+  const listBox = el("div", "");
+  launchSec.appendChild(listBox);
   view.appendChild(launchSec);
 
   // Token yang saya pegang.
@@ -1252,12 +1290,11 @@ async function renderProfile(): Promise<void> {
     }
     if (!stillHere()) return;
   }
-  grid.innerHTML = "";
+  listBox.innerHTML = "";
   if (mine.length === 0) {
-    grid.appendChild(el("div", "empty", "Belum ada launch."));
-  }
-  for (const l of mine) {
-    grid.appendChild(launchCard(l));
+    listBox.appendChild(el("div", "empty", "Belum ada launch."));
+  } else {
+    listBox.appendChild(myLaunchesTable(mine));
   }
 
   // Holdings.
@@ -1451,6 +1488,9 @@ interface SwapFormOpts {
   quoteStyle?: "trade" | "swap";
   /** Disable the exec button until a wallet is connected AND a valid quote exists (Swap page). */
   disableUntilQuote?: boolean;
+  /** "stacked" (detail Trade panel, default) or "uniswap" (Swap page: two
+      stacked panels + overlapping flip + big full-width action). */
+  layout?: "stacked" | "uniswap";
   /** After a successful swap (result already shown in the modal). */
   onExecuted?: () => Promise<void> | void;
 }
@@ -1461,6 +1501,162 @@ interface SwapFormHandle {
   getDirection(): "buy" | "sell";
   /** Re-evaluate the exec button's disabled state (wallet / quote). */
   refreshExecState(): void;
+}
+
+interface UniSwapShell {
+  root: HTMLElement;
+  receiveAmount: HTMLElement;
+  payPillSlot: HTMLElement;
+  receivePillSlot: HTMLElement;
+  flipBtn: HTMLButtonElement;
+}
+
+/**
+ * Uniswap-style shell for the Swap page: a "You pay" panel (big amount +
+ * token pill + balance + MAX), an overlapping flip button, a "You receive"
+ * panel (big live quote + token pill + quote details), a gear-toggled
+ * slippage row, and a big full-width action button. The shell only builds
+ * DOM — the engine (curve / pool / wrap) wires its logic to the elements.
+ * The engine's own elements (amount input, balance row, slippage input,
+ * exec button, result box, quote box) are re-parented into the shell; the
+ * engine's quote box becomes the receive panel's details area.
+ */
+function uniSwapShell(args: {
+  amountInput: HTMLInputElement;
+  balRow: HTMLElement;
+  slipInput: HTMLInputElement;
+  execBtn: HTMLButtonElement;
+  resultBox: HTMLElement;
+  quoteBox: HTMLElement;
+  showSlippage: boolean;
+  disableUntilQuote: boolean;
+}): UniSwapShell {
+  const root = el("div", "uni-swap");
+  // Settings row: gear toggles the slippage input (a wrap is 1:1, so it has none).
+  if (args.showSlippage) {
+    const toolbar = el("div", "uni-toolbar");
+    const gear = el("button", "btn icon-btn uni-gear", "⚙") as HTMLButtonElement;
+    gear.type = "button";
+    gear.title = "Slippage settings";
+    gear.setAttribute("aria-label", "Slippage settings");
+    const slipRow = el("div", "uni-slip-row hidden");
+    slipRow.appendChild(el("span", "", "Slippage tolerance"));
+    slipRow.appendChild(args.slipInput);
+    slipRow.appendChild(el("span", "", "%"));
+    gear.onclick = () => slipRow.classList.toggle("hidden");
+    toolbar.appendChild(gear);
+    root.append(toolbar, slipRow);
+  }
+  // Pay panel.
+  const payPanel = el("div", "uni-panel uni-pay");
+  payPanel.appendChild(el("div", "uni-label", "You pay"));
+  const payRow = el("div", "uni-row");
+  args.amountInput.classList.add("uni-amount");
+  const payPillSlot = el("div", "uni-pill-slot");
+  payRow.append(args.amountInput, payPillSlot);
+  payPanel.appendChild(payRow);
+  payPanel.appendChild(args.balRow);
+  root.appendChild(payPanel);
+  // Token menu (one instance): drops down from the pay panel, over the
+  // receive panel. Either pill toggles it.
+  const menuWrap = el("div", "swap-selector");
+  menuWrap.appendChild(swapMenuEl());
+  root.appendChild(menuWrap);
+  // Flip button straddling the two panels.
+  const flipWrap = el("div", "uni-flip");
+  const flipBtn = el("button", "btn icon-btn uni-flip-btn", "↓") as HTMLButtonElement;
+  flipBtn.type = "button";
+  flipBtn.title = "Flip direction";
+  flipBtn.setAttribute("aria-label", "Flip swap direction");
+  flipWrap.appendChild(flipBtn);
+  root.appendChild(flipWrap);
+  // Receive panel.
+  const receivePanel = el("div", "uni-panel uni-receive-panel");
+  receivePanel.appendChild(el("div", "uni-label", "You receive"));
+  const receiveRow = el("div", "uni-row");
+  const receiveAmount = el("div", "uni-receive uni-empty", "0.0");
+  const receivePillSlot = el("div", "uni-pill-slot");
+  receiveRow.append(receiveAmount, receivePillSlot);
+  receivePanel.appendChild(receiveRow);
+  args.quoteBox.classList.add("uni-details");
+  receivePanel.appendChild(args.quoteBox);
+  root.appendChild(receivePanel);
+  // Big full-width action + result.
+  args.execBtn.classList.add("uni-action");
+  if (args.disableUntilQuote) args.execBtn.disabled = true;
+  root.append(args.execBtn, args.resultBox);
+  return { root, receiveAmount, payPillSlot, receivePillSlot, flipBtn };
+}
+
+/** Token menu (ETH / WETH / launches), filled by fillSwapMenu. */
+function swapMenuEl(): HTMLElement {
+  const menu = el("div", "swap-menu hidden");
+  menu.setAttribute("role", "listbox");
+  const search = el("input", "swap-menu-search") as HTMLInputElement;
+  search.type = "search";
+  search.placeholder = "Search by name, ticker or address";
+  search.setAttribute("aria-label", "Search tokens");
+  search.oninput = () => fillSwapMenu(search.value);
+  const list = el("div", "swap-menu-list");
+  menu.append(search, list);
+  return menu;
+}
+
+/** Toggle the Swap page token menu (ETH / WETH / launches). Either pill opens it. */
+function toggleSwapMenu(): void {
+  const menu = document.querySelector(".swap-menu");
+  if (!menu) return;
+  if (menu.classList.contains("hidden")) {
+    closeWalletMenu();
+    closeMobileNav();
+    const search = menu.querySelector<HTMLInputElement>(".swap-menu-search");
+    if (search) search.value = "";
+    fillSwapMenu("");
+    menu.classList.remove("hidden");
+    const btn = document.querySelector<HTMLButtonElement>(".swap-token-btn");
+    if (btn) btn.setAttribute("aria-expanded", "true");
+    search?.focus();
+  } else {
+    closeSwapMenu();
+  }
+}
+
+/** Launch-token selector pill button. Filled by refreshSwapSelector
+ * (compact inside .uni-swap, full above the form otherwise). */
+function swapTokenBtnEl(): HTMLButtonElement {
+  const btn = el("button", "btn swap-token-btn") as HTMLButtonElement;
+  btn.type = "button";
+  btn.setAttribute("aria-haspopup", "listbox");
+  btn.setAttribute("aria-expanded", "false");
+  btn.onclick = () => toggleSwapMenu();
+  return btn;
+}
+
+/** Launch-token selector (button + dropdown menu), for the Swap page's
+ * non-tradeable states (empty / loading / ready-to-graduate). The tradeable
+ * form builds the same pieces through the Uniswap shell instead. */
+function swapSelectorEl(): { wrap: HTMLElement; btn: HTMLButtonElement } {
+  const wrap = el("div", "swap-selector");
+  const btn = swapTokenBtnEl();
+  wrap.append(btn, swapMenuEl());
+  return { wrap, btn };
+}
+
+/** Static token pill for the non-launch side of the pair (ETH / WETH).
+ * Clicking it opens the same token menu as the launch pill. */
+function fixedTokenPill(symbol: "ETH" | "WETH"): HTMLElement {
+  const pill = el("button", "btn uni-pill") as HTMLButtonElement;
+  pill.type = "button";
+  pill.setAttribute("aria-haspopup", "listbox");
+  const tile = el("div", "token-tile token-tile-sm");
+  const mono = el("div", "monogram monogram-sm", symbol[0]);
+  mono.style.background = symbol === "ETH" ? "hsl(220 45% 45%)" : "hsl(160 45% 45%)";
+  tile.appendChild(mono);
+  pill.appendChild(tile);
+  pill.appendChild(el("span", "", symbol));
+  pill.appendChild(el("span", "muted", "▾"));
+  pill.onclick = () => toggleSwapMenu();
+  return pill;
 }
 
 /**
@@ -1485,11 +1681,29 @@ function curveSwapForm(l: EnrichedLaunch, opts: SwapFormOpts): SwapFormHandle {
   let lastAmountIn = 0n;
   let hasQuote = false;
 
+  // Uniswap layout (Swap page only): the shell owns the panels; the pills
+  // move between them when the direction flips. Stacked layout (detail
+  // Trade panel) never touches these.
+  let uniShell: UniSwapShell | null = null;
+  let uniLaunchPill: HTMLButtonElement | null = null;
+  let uniFixedPill: HTMLElement | null = null;
+  let uniReceiveAmount: HTMLElement | null = null;
+  function placeUniPills(dir: "buy" | "sell"): void {
+    if (!uniShell || !uniLaunchPill || !uniFixedPill) return;
+    if (dir === "buy") {
+      uniShell.payPillSlot.appendChild(uniFixedPill);
+      uniShell.receivePillSlot.appendChild(uniLaunchPill);
+    } else {
+      uniShell.payPillSlot.appendChild(uniLaunchPill);
+      uniShell.receivePillSlot.appendChild(uniFixedPill);
+    }
+  }
+
   const dirRow = el("div", "seg");
   const buyBtn = el("button", "btn seg-btn active", "Buy") as HTMLButtonElement;
   const sellBtn = el("button", "btn seg-btn", "Sell") as HTMLButtonElement;
   dirRow.append(buyBtn, sellBtn);
-  form.appendChild(dirRow);
+  if (opts.layout !== "uniswap") form.appendChild(dirRow);
   const amountLabel = el("label", "", payLabel(direction));
   const amountInput = el("input") as HTMLInputElement;
   amountInput.type = "text";
@@ -1552,6 +1766,8 @@ function curveSwapForm(l: EnrichedLaunch, opts: SwapFormOpts): SwapFormHandle {
 
   function setDirection(dir: "buy" | "sell"): void {
     direction = dir;
+    if (opts.layout === "uniswap") swapDirection = dir;
+    placeUniPills(dir);
     buyBtn.classList.toggle("active", dir === "buy");
     sellBtn.classList.toggle("active", dir === "sell");
     amountLabel.textContent = payLabel(dir);
@@ -1575,6 +1791,10 @@ function curveSwapForm(l: EnrichedLaunch, opts: SwapFormOpts): SwapFormHandle {
     execBtn.textContent = idleLabel(direction);
     const raw = amountInput.value.trim();
     if (!raw || Number(raw) <= 0) {
+      if (opts.layout === "uniswap" && uniReceiveAmount) {
+        uniReceiveAmount.textContent = "0.0";
+        uniReceiveAmount.classList.add("uni-empty");
+      }
       quoteBox.textContent = "Enter an amount to see a live quote.";
       refreshExecState();
       return;
@@ -1593,8 +1813,16 @@ function curveSwapForm(l: EnrichedLaunch, opts: SwapFormOpts): SwapFormHandle {
         // a raw division is off by 10^(inDec - outDec) whenever the
         // decimals differ (e.g. WETH 18 vs a 9-decimal token: 1e9x wrong).
         const unit = (Number(q.amountOut) / 10 ** outDec) / (Number(amountIn) / 10 ** decimals);
+        if (opts.layout === "uniswap" && uniReceiveAmount) {
+          // Big receive amount in the panel; the "You receive ≈" line is
+          // skipped below so it does not duplicate the big number.
+          uniReceiveAmount.textContent = `${fmtAmount(q.amountOut, outDec)} ${outSym}`;
+          uniReceiveAmount.classList.remove("uni-empty");
+        }
         quoteBox.innerHTML = "";
-        quoteBox.appendChild(el("div", "", `You receive ≈ ${fmtAmount(q.amountOut, outDec)} ${outSym}`));
+        if (opts.layout !== "uniswap") {
+          quoteBox.appendChild(el("div", "", `You receive ≈ ${fmtAmount(q.amountOut, outDec)} ${outSym}`));
+        }
         quoteBox.appendChild(el("div", "", `Minimum received (${(state.slippageBps / 100).toFixed(1)}% slippage): ${fmtAmount(min, outDec)} ${outSym}`));
         if (q.fee > 0n) quoteBox.appendChild(el("div", "", `Fee: ${fmtAmount(q.fee, decimals)} ${inSym}`));
         quoteBox.appendChild(el("div", "", `Price: 1 ${inSym} ≈ ${formatDisplayNumber(unit)} ${outSym}`));
@@ -1607,6 +1835,10 @@ function curveSwapForm(l: EnrichedLaunch, opts: SwapFormOpts): SwapFormHandle {
       hasQuote = true;
       execBtn.textContent = "Preview & execute";
     } catch (err) {
+      if (opts.layout === "uniswap" && uniReceiveAmount) {
+        uniReceiveAmount.textContent = "—";
+        uniReceiveAmount.classList.add("uni-empty");
+      }
       quoteBox.textContent = `Quote failed: ${friendlyErrorMessage(err)}`;
     }
     refreshExecState();
@@ -1700,7 +1932,28 @@ function curveSwapForm(l: EnrichedLaunch, opts: SwapFormOpts): SwapFormHandle {
     }
   };
 
-  form.append(amountLabel, amountInput, balRow, slipLabel, slipInput, quoteBox, execBtn, resultBox);
+  if (opts.layout === "uniswap") {
+    // Uniswap panels (Swap page): the shell re-parents the engine's own
+    // elements; the launch pill + WETH pill move between the panels.
+    uniShell = uniSwapShell({
+      amountInput, balRow, slipInput, execBtn, resultBox, quoteBox,
+      showSlippage: true, disableUntilQuote: !!opts.disableUntilQuote,
+    });
+    form.appendChild(uniShell.root);
+    uniReceiveAmount = uniShell.receiveAmount;
+    uniLaunchPill = swapTokenBtnEl();
+    uniFixedPill = fixedTokenPill("WETH");
+    placeUniPills(direction);
+    uniShell.flipBtn.onclick = () => {
+      closeSwapMenu();
+      setDirection(direction === "buy" ? "sell" : "buy");
+    };
+    // The launch pill is filled by renderSwapSelector() in renderSwapForm
+    // once this form is appended — the form is still detached here, so a
+    // document query cannot see the pill yet.
+  } else {
+    form.append(amountLabel, amountInput, balRow, slipLabel, slipInput, quoteBox, execBtn, resultBox);
+  }
   return {
     element: form,
     setDirection,
@@ -1737,27 +1990,36 @@ function tradePanel(l: EnrichedLaunch): HTMLElement {
     }).element);
   } else if (status === 2) {
     wrap.appendChild(el("div", "warn", "This curve is ready to graduate. Graduation migrates liquidity to the pool and is permissionless."));
-    const gBtn = el("button", "btn primary", "Graduate (migrate to pool)") as HTMLButtonElement;
-    const gBox = el("div", "result");
-    gBtn.onclick = async () => {
-      gBox.innerHTML = "";
-      if (!state.account) { gBox.appendChild(el("div", "error", "Connect a wallet first.")); return; }
-      try {
-        gBtn.disabled = true;
-        const sdk = curveClient(l.curve!);
-        const plan = await sdk.planMigrate();
-        gBox.appendChild(el("div", "muted", `Migrate tx targets ${shortAddr(plan.transaction.to)}. Confirm in your wallet…`));
-        const hash = await sendTx(plan.transaction);
-        gBox.appendChild(el("div", "muted", `Tx sent: ${shortAddr(hash)} — waiting…`));
-        await waitReceipt(hash);
-        gBox.appendChild(el("div", "ok", "Migration submitted. Refresh the launch to see the graduated pool."));
-        const fresh = await getCurveFull(l.curve);
-        l.curveData = fresh;
-        renderDiscover();
-      } catch (err) { showError(gBox, err); }
-      gBtn.disabled = false;
-    };
-    wrap.append(gBtn, gBox);
+    // Graduation is permissionless at the protocol level, but in this app
+    // only the launch creator may press the button — anyone else just sees
+    // the note. (connectWallet re-renders the detail view, so a creator
+    // who connects after opening it gets the button then.)
+    const isCreator = !!state.account && state.account.toLowerCase() === l.creator.toLowerCase();
+    if (!isCreator) {
+      wrap.appendChild(el("div", "muted", "This curve is ready to graduate — only its creator can do it from this app."));
+    } else {
+      const gBtn = el("button", "btn primary", "Graduate (migrate to pool)") as HTMLButtonElement;
+      const gBox = el("div", "result");
+      gBtn.onclick = async () => {
+        gBox.innerHTML = "";
+        if (!state.account) { gBox.appendChild(el("div", "error", "Connect a wallet first.")); return; }
+        try {
+          gBtn.disabled = true;
+          const sdk = curveClient(l.curve!);
+          const plan = await sdk.planMigrate();
+          gBox.appendChild(el("div", "muted", `Migrate tx targets ${shortAddr(plan.transaction.to)}. Confirm in your wallet…`));
+          const hash = await sendTx(plan.transaction);
+          gBox.appendChild(el("div", "muted", `Tx sent: ${shortAddr(hash)} — waiting…`));
+          await waitReceipt(hash);
+          gBox.appendChild(el("div", "ok", "Migration submitted. Refresh the launch to see the graduated pool."));
+          const fresh = await getCurveFull(l.curve);
+          l.curveData = fresh;
+          renderDiscover();
+        } catch (err) { showError(gBox, err); }
+        gBtn.disabled = false;
+      };
+      wrap.append(gBtn, gBox);
+    }
   } else if (status === 3) {
     wrap.appendChild(el("div", "muted", "Graduated — trading now happens on the canonical pool:"));
     const poolAddr = l.curveData.state.canonicalPool;
@@ -1794,11 +2056,29 @@ function poolSwapForm(l: EnrichedLaunch, pool: Address, opts: SwapFormOpts): Swa
   let lastOutMeta: { symbol: string; decimals: number } | null = null;
   let hasQuote = false;
 
+  // Uniswap layout (Swap page only): the shell owns the panels; the pills
+  // move between them when the direction flips. Stacked layout (detail
+  // Pool panel) never touches these.
+  let uniShell: UniSwapShell | null = null;
+  let uniLaunchPill: HTMLButtonElement | null = null;
+  let uniFixedPill: HTMLElement | null = null;
+  let uniReceiveAmount: HTMLElement | null = null;
+  function placeUniPills(dir: "buy" | "sell"): void {
+    if (!uniShell || !uniLaunchPill || !uniFixedPill) return;
+    if (dir === "buy") {
+      uniShell.payPillSlot.appendChild(uniFixedPill);
+      uniShell.receivePillSlot.appendChild(uniLaunchPill);
+    } else {
+      uniShell.payPillSlot.appendChild(uniLaunchPill);
+      uniShell.receivePillSlot.appendChild(uniFixedPill);
+    }
+  }
+
   const dirRow = el("div", "seg");
   const buyBtn = el("button", "btn seg-btn active", "Buy with ETH") as HTMLButtonElement;
   const sellBtn = el("button", "btn seg-btn", "Sell for WETH") as HTMLButtonElement;
   dirRow.append(buyBtn, sellBtn);
-  form.appendChild(dirRow);
+  if (opts.layout !== "uniswap") form.appendChild(dirRow);
   const amountLabel = el("label", "", payLabel(direction));
   const amountInput = el("input") as HTMLInputElement;
   amountInput.type = "text";
@@ -1860,6 +2140,8 @@ function poolSwapForm(l: EnrichedLaunch, pool: Address, opts: SwapFormOpts): Swa
 
   function setDirection(dir: "buy" | "sell"): void {
     direction = dir;
+    if (opts.layout === "uniswap") swapDirection = dir;
+    placeUniPills(dir);
     buyBtn.classList.toggle("active", dir === "buy");
     sellBtn.classList.toggle("active", dir === "sell");
     amountLabel.textContent = payLabel(dir);
@@ -1883,6 +2165,10 @@ function poolSwapForm(l: EnrichedLaunch, pool: Address, opts: SwapFormOpts): Swa
     execBtn.textContent = idleLabel(direction);
     const raw = amountInput.value.trim();
     if (!raw || Number(raw) <= 0) {
+      if (opts.layout === "uniswap" && uniReceiveAmount) {
+        uniReceiveAmount.textContent = "0.0";
+        uniReceiveAmount.classList.add("uni-empty");
+      }
       quoteBox.textContent = direction === "buy"
         ? "Enter an ETH amount to see a live pool quote."
         : "Enter a token amount to see a live pool quote.";
@@ -1903,8 +2189,14 @@ function poolSwapForm(l: EnrichedLaunch, pool: Address, opts: SwapFormOpts): Swa
         if (opts.quoteStyle === "swap") {
           // Per-token price: scale both raw amounts to whole tokens first.
           const unit = (Number(q.amountOut) / 10 ** outMeta.decimals) / (Number(amountIn) / 10 ** 18);
+          if (opts.layout === "uniswap" && uniReceiveAmount) {
+            uniReceiveAmount.textContent = `${fmtAmount(q.amountOut, outMeta.decimals)} ${outMeta.symbol}`;
+            uniReceiveAmount.classList.remove("uni-empty");
+          }
           quoteBox.innerHTML = "";
-          quoteBox.appendChild(el("div", "", `You receive ≈ ${fmtAmount(q.amountOut, outMeta.decimals)} ${outMeta.symbol}`));
+          if (opts.layout !== "uniswap") {
+            quoteBox.appendChild(el("div", "", `You receive ≈ ${fmtAmount(q.amountOut, outMeta.decimals)} ${outMeta.symbol}`));
+          }
           quoteBox.appendChild(el("div", "", `Minimum received (${(state.slippageBps / 100).toFixed(1)}% slippage): ${fmtAmount(lastMinOut, outMeta.decimals)} ${outMeta.symbol}`));
           quoteBox.appendChild(el("div", "", `Price: 1 ETH ≈ ${formatDisplayNumber(unit)} ${outMeta.symbol}`));
         } else {
@@ -1923,8 +2215,14 @@ function poolSwapForm(l: EnrichedLaunch, pool: Address, opts: SwapFormOpts): Swa
         if (opts.quoteStyle === "swap") {
           // Per-token price: scale both raw amounts to whole tokens first.
           const unit = (Number(q.amountOut) / 10 ** 18) / (Number(amountIn) / 10 ** l.meta!.decimals);
+          if (opts.layout === "uniswap" && uniReceiveAmount) {
+            uniReceiveAmount.textContent = `${fmtAmount(q.amountOut, 18)} WETH`;
+            uniReceiveAmount.classList.remove("uni-empty");
+          }
           quoteBox.innerHTML = "";
-          quoteBox.appendChild(el("div", "", `You receive ≈ ${fmtAmount(q.amountOut, 18)} WETH`));
+          if (opts.layout !== "uniswap") {
+            quoteBox.appendChild(el("div", "", `You receive ≈ ${fmtAmount(q.amountOut, 18)} WETH`));
+          }
           quoteBox.appendChild(el("div", "", `Minimum received (${(state.slippageBps / 100).toFixed(1)}% slippage): ${fmtAmount(lastMinOut, 18)} WETH`));
           quoteBox.appendChild(el("div", "", `Price: 1 ${baseSymbol} ≈ ${formatDisplayNumber(unit)} WETH`));
         } else {
@@ -1936,6 +2234,10 @@ function poolSwapForm(l: EnrichedLaunch, pool: Address, opts: SwapFormOpts): Swa
         execBtn.textContent = "Preview & execute";
       }
     } catch (err) {
+      if (opts.layout === "uniswap" && uniReceiveAmount) {
+        uniReceiveAmount.textContent = "—";
+        uniReceiveAmount.classList.add("uni-empty");
+      }
       quoteBox.textContent = `Quote failed: ${friendlyErrorMessage(err)}`;
     }
     refreshExecState();
@@ -2037,7 +2339,28 @@ function poolSwapForm(l: EnrichedLaunch, pool: Address, opts: SwapFormOpts): Swa
     }
   };
 
-  form.append(amountLabel, amountInput, balRow, slipLabel, slipInput, quoteBox, execBtn, resultBox);
+  if (opts.layout === "uniswap") {
+    // Uniswap panels (Swap page): the shell re-parents the engine's own
+    // elements; the launch pill + ETH pill move between the panels.
+    uniShell = uniSwapShell({
+      amountInput, balRow, slipInput, execBtn, resultBox, quoteBox,
+      showSlippage: true, disableUntilQuote: !!opts.disableUntilQuote,
+    });
+    form.appendChild(uniShell.root);
+    uniReceiveAmount = uniShell.receiveAmount;
+    uniLaunchPill = swapTokenBtnEl();
+    uniFixedPill = fixedTokenPill("ETH");
+    placeUniPills(direction);
+    uniShell.flipBtn.onclick = () => {
+      closeSwapMenu();
+      setDirection(direction === "buy" ? "sell" : "buy");
+    };
+    // The launch pill is filled by renderSwapSelector() in renderSwapForm
+    // once this form is appended — the form is still detached here, so a
+    // document query cannot see the pill yet.
+  } else {
+    form.append(amountLabel, amountInput, balRow, slipLabel, slipInput, quoteBox, execBtn, resultBox);
+  }
   return {
     element: form,
     setDirection,
@@ -2056,6 +2379,175 @@ function poolTradePanel(l: EnrichedLaunch, pool: Address): HTMLElement {
     },
   }).element);
   return wrap;
+}
+
+
+/**
+ * ETH <-> WETH wrap / unwrap form (Swap page only, Uniswap layout).
+ * Exactly 1:1 — no curve/pool quote, no slippage, no fee besides gas.
+ * "buy" = wrap (pay ETH, receive WETH); "sell" = unwrap (pay WETH,
+ * receive ETH). Executes behind the shared review modal like every
+ * other swap. Buying a launch still pays WETH — the user wraps first,
+ * then buys; that is the standard flow.
+ */
+function wrapSwapForm(opts: { initialDirection?: "buy" | "sell" }): SwapFormHandle {
+  const idleLabel = (dir: "buy" | "sell"): string => dir === "buy" ? "Wrap ETH → WETH" : "Unwrap WETH → ETH";
+  let direction: "buy" | "sell" = opts.initialDirection ?? "buy";
+  let lastAmount = 0n;
+  let hasQuote = false;
+
+  const amountInput = el("input") as HTMLInputElement;
+  amountInput.type = "text";
+  amountInput.inputMode = "decimal";
+  amountInput.placeholder = "0.0";
+  const balRow = el("div", "balance-row");
+  balRow.appendChild(el("span", "muted", "Balance"));
+  const balVal = el("span", "balance-val", "…");
+  balRow.appendChild(balVal);
+  const maxBtn = el("button", "btn text", "MAX") as HTMLButtonElement;
+  maxBtn.onclick = () => {
+    const bal = direction === "buy" ? state.ethBalance : state.wethBalance;
+    amountInput.value = formatUnits(bal, 18);
+    void updateQuote();
+  };
+  balRow.appendChild(maxBtn);
+  const slipInput = el("input") as HTMLInputElement; // unused (1:1) — the shell hides the slippage row
+  const quoteBox = el("div", "quote-box muted", "Enter an amount to wrap or unwrap (1:1).");
+  const execBtn = el("button", "btn primary", idleLabel(direction)) as HTMLButtonElement;
+  const resultBox = el("div", "result");
+
+  const shell = uniSwapShell({
+    amountInput, balRow, slipInput, execBtn, resultBox, quoteBox,
+    showSlippage: false, disableUntilQuote: true,
+  });
+  const form = shell.root;
+  const ethPill = fixedTokenPill("ETH");
+  const wethPill = fixedTokenPill("WETH");
+  function placePills(dir: "buy" | "sell"): void {
+    if (dir === "buy") {
+      shell.payPillSlot.appendChild(ethPill);
+      shell.receivePillSlot.appendChild(wethPill);
+    } else {
+      shell.payPillSlot.appendChild(wethPill);
+      shell.receivePillSlot.appendChild(ethPill);
+    }
+  }
+  placePills(direction);
+
+  function refreshExecState(): void {
+    execBtn.disabled = !state.account || !hasQuote;
+  }
+  function resetExec(): void {
+    execBtn.disabled = false;
+    execBtn.textContent = idleLabel(direction);
+    refreshExecState();
+  }
+  function refreshBal(): void {
+    const isWrap = direction === "buy";
+    balVal.textContent = `${fmtAmount(isWrap ? state.ethBalance : state.wethBalance, 18)} ${isWrap ? "ETH" : "WETH"}`;
+  }
+  function setDirection(dir: "buy" | "sell"): void {
+    direction = dir;
+    swapDirection = dir;
+    placePills(dir);
+    lastAmount = 0n;
+    execBtn.textContent = idleLabel(dir);
+    refreshBal();
+    void updateQuote();
+  }
+  shell.flipBtn.onclick = () => {
+    closeSwapMenu();
+    setDirection(direction === "buy" ? "sell" : "buy");
+  };
+
+  function updateQuote(): void {
+    lastAmount = 0n;
+    hasQuote = false;
+    execBtn.textContent = idleLabel(direction);
+    const raw = amountInput.value.trim();
+    if (!raw || Number(raw) <= 0) {
+      shell.receiveAmount.textContent = "0.0";
+      shell.receiveAmount.classList.add("uni-empty");
+      quoteBox.textContent = "Enter an amount to wrap or unwrap (1:1).";
+      refreshExecState();
+      return;
+    }
+    try {
+      const amount = parseUnits(raw, 18);
+      lastAmount = amount;
+      const isWrap = direction === "buy";
+      shell.receiveAmount.textContent = `${fmtAmount(amount, 18)} ${isWrap ? "WETH" : "ETH"}`;
+      shell.receiveAmount.classList.remove("uni-empty");
+      quoteBox.innerHTML = "";
+      quoteBox.appendChild(el("div", "", "Rate: 1 ETH = 1 WETH"));
+      quoteBox.appendChild(el("div", "", "No slippage — 1:1 wrap. Fee: none besides gas."));
+      hasQuote = true;
+      execBtn.textContent = "Preview & execute";
+    } catch (err) {
+      shell.receiveAmount.textContent = "—";
+      shell.receiveAmount.classList.add("uni-empty");
+      quoteBox.textContent = `Invalid amount: ${friendlyErrorMessage(err)}`;
+    }
+    refreshExecState();
+  }
+  amountInput.oninput = () => void updateQuote();
+
+  execBtn.onclick = async () => {
+    resultBox.innerHTML = "";
+    if (!state.account) { resultBox.appendChild(el("div", "error", "Connect a wallet first.")); return; }
+    if (lastAmount === 0n) { resultBox.appendChild(el("div", "error", "Enter an amount and wait for the quote first.")); return; }
+    try {
+      const isWrap = direction === "buy";
+      const bal = isWrap ? state.ethBalance : state.wethBalance;
+      if (bal < lastAmount) {
+        resultBox.appendChild(el("div", "error", `Your ${isWrap ? "ETH" : "WETH"} balance (${fmtAmount(bal, 18)}) is less than the amount.`));
+        return;
+      }
+      execBtn.disabled = true;
+      execBtn.textContent = "Building plan…";
+      const tx = isWrap ? buildWrapTx(lastAmount) : buildUnwrapTx(lastAmount);
+      const m = openReviewModal({
+        signLabel: "Sign & execute in wallet",
+        onClose: () => resetExec(),
+      });
+      m.body.appendChild(reviewRow("You pay", `${fmtAmount(lastAmount, 18)} ${isWrap ? "ETH" : "WETH"}`));
+      m.body.appendChild(reviewRow("You receive", `${fmtAmount(lastAmount, 18)} ${isWrap ? "WETH" : "ETH"}`));
+      m.body.appendChild(reviewRow("Rate", "1 ETH = 1 WETH"));
+      m.body.appendChild(reviewRow("To (WETH)", reviewAddrValue(WETH)));
+      resetExec();
+      m.signBtn.onclick = async () => {
+        try {
+          reviewBeginSign();
+          m.statusBox.appendChild(el("div", "muted", "Sending — confirm in your wallet…"));
+          const hash = await sendTx(tx);
+          m.statusBox.appendChild(el("div", "muted", `Tx sent: ${shortAddr(hash)} — waiting for confirmation…`));
+          await waitReceipt(hash);
+          m.statusBox.appendChild(el("div", "ok", isWrap
+            ? `Wrapped ${fmtAmount(lastAmount, 18)} ETH → WETH.`
+            : `Unwrapped ${fmtAmount(lastAmount, 18)} WETH → ETH.`));
+          reviewFinish();
+          await refreshBalances();
+          renderWallet();
+          refreshBal();
+        } catch (err) {
+          reviewResetSign("Sign & execute in wallet");
+          showError(m.statusBox, err);
+        }
+      };
+    } catch (err) {
+      showError(resultBox, err);
+      resetExec();
+    }
+  };
+
+  refreshBal();
+  void updateQuote();
+  return {
+    element: form,
+    setDirection,
+    getDirection: () => direction,
+    refreshExecState,
+  };
 }
 
 
@@ -2078,6 +2570,7 @@ function swapSelectedLaunch(): EnrichedLaunch | null {
 /** Open the Swap page with a token preselected (detail / Discover entry points). */
 function openSwap(l: EnrichedLaunch): void {
   state.swapCurve = l.curve;
+  state.swapWrap = null;
   try { history.replaceState(null, "", `#swap/${l.token}`); } catch { /* non-fatal */ }
   showView("swap");
   renderSwap();
@@ -2102,6 +2595,12 @@ function refreshSwapSelector(): void {
     return;
   }
   btn.appendChild(tokenTile(l, "sm"));
+  if (btn.closest(".uni-swap")) {
+    // Compact pill inside the Uniswap panels: tile + $SYMBOL + chevron.
+    btn.appendChild(el("span", "swap-token-sym", `$${l.meta?.symbol ?? shortAddr(l.token)}`));
+    btn.appendChild(el("span", "muted", "▾"));
+    return;
+  }
   const mid = el("div", "swap-token-mid");
   mid.appendChild(el("div", "swap-token-sym", `$${l.meta?.symbol ?? shortAddr(l.token)}`));
   mid.appendChild(el("div", "muted swap-token-name", l.meta?.name ?? shortAddr(l.token)));
@@ -2117,6 +2616,36 @@ function fillSwapMenu(q: string): void {
   if (!menu || !list) return;
   list.innerHTML = "";
   const query = q.trim().toLowerCase();
+  // Native ETH + WETH first: the wrap pair (1:1, no curve/pool). Picking
+  // ETH wraps (pay ETH), picking WETH unwraps (pay WETH).
+  const wrapRows: Array<{ key: "wrap" | "unwrap"; symbol: "ETH" | "WETH"; name: string }> = [
+    { key: "wrap", symbol: "ETH", name: "Ethereum (native) — wrap to WETH" },
+    { key: "unwrap", symbol: "WETH", name: "Wrapped ETH — unwrap to ETH" },
+  ];
+  for (const w of wrapRows) {
+    if (query && !`${w.symbol} ${w.name} wrap unwrap`.toLowerCase().includes(query)) continue;
+    const row = el("button", "swap-token-row") as HTMLButtonElement;
+    row.type = "button";
+    row.setAttribute("role", "option");
+    const tile = el("div", "token-tile token-tile-sm");
+    const mono = el("div", "monogram monogram-sm", w.symbol[0]);
+    mono.style.background = w.symbol === "ETH" ? "hsl(220 45% 45%)" : "hsl(160 45% 45%)";
+    tile.appendChild(mono);
+    row.appendChild(tile);
+    const mid = el("div", "swap-token-mid");
+    mid.appendChild(el("div", "swap-token-sym", w.symbol));
+    mid.appendChild(el("div", "muted swap-token-name", w.name));
+    row.appendChild(mid);
+    row.appendChild(el("span", "swap-token-price", "1:1"));
+    row.onclick = () => {
+      state.swapWrap = w.key;
+      swapDirection = w.key === "wrap" ? "buy" : "sell";
+      closeSwapMenu();
+      renderSwapForm();
+      try { history.replaceState(null, "", "#swap"); } catch { /* non-fatal */ }
+    };
+    list.appendChild(row);
+  }
   const items = state.launches.filter((l) => {
     if (!query) return true;
     const hay = `${l.meta?.name ?? ""} ${l.meta?.symbol ?? ""} ${l.token} ${l.curve} ${l.creator}`.toLowerCase();
@@ -2145,6 +2674,7 @@ function fillSwapMenu(q: string): void {
       : `${formatDisplayNumber(mcap)} ETH`));
     row.onclick = () => {
       state.swapCurve = l.curve;
+      state.swapWrap = null;
       closeSwapMenu();
       refreshSwapSelector();
       renderSwapForm();
@@ -2160,14 +2690,25 @@ function renderSwapForm(): void {
   if (!slot) return;
   slot.innerHTML = "";
   swapFormHandle = null;
+  // ETH <-> WETH wrap pair (no launch): 1:1, no curve/pool.
+  if (state.swapWrap) {
+    slot.dataset.state = "ready";
+    swapFormHandle = wrapSwapForm({ initialDirection: swapDirection });
+    slot.appendChild(swapFormHandle.element);
+    return;
+  }
   const l = swapSelectedLaunch();
   if (!l) {
     slot.dataset.state = "empty";
+    slot.appendChild(swapSelectorEl().wrap);
+    refreshSwapSelector();
     slot.appendChild(el("div", "empty", "Pick a token above to swap."));
     return;
   }
   if (!l.meta || !l.curveData) {
     slot.dataset.state = "loading";
+    slot.appendChild(swapSelectorEl().wrap);
+    refreshSwapSelector();
     const sk = el("div", "skeleton");
     sk.style.height = "220px";
     slot.appendChild(sk);
@@ -2180,6 +2721,7 @@ function renderSwapForm(): void {
     initialDirection: swapDirection,
     quoteStyle: "swap",
     disableUntilQuote: true,
+    layout: "uniswap",
     idleExecLabel: (dir) => dir === "buy" ? `Buy $${l.meta!.symbol}` : `Sell $${l.meta!.symbol}`,
     onExecuted: async () => {
       await refreshBalances();
@@ -2195,18 +2737,26 @@ function renderSwapForm(): void {
     slot.dataset.state = "ready";
     swapFormHandle = curveSwapForm(l, opts);
     slot.appendChild(swapFormHandle.element);
+    // The form is built detached — the launch pill only exists in the
+    // document once appended, so fill it now (the in-form call cannot).
+    refreshSwapSelector();
   } else if (status === 3) {
     slot.dataset.state = "ready";
     swapFormHandle = poolSwapForm(l, l.curveData.state.canonicalPool, opts);
     slot.appendChild(swapFormHandle.element);
+    refreshSwapSelector();
   } else if (status === 2) {
     slot.dataset.state = "ready";
+    slot.appendChild(swapSelectorEl().wrap);
+    refreshSwapSelector();
     slot.appendChild(el("div", "warn", "This curve is ready to graduate. Graduation migrates liquidity to the pool and is permissionless."));
     const openBtn = el("button", "btn primary", "Open launch") as HTMLButtonElement;
     openBtn.onclick = () => openDetail(l);
     slot.appendChild(openBtn);
   } else {
     slot.dataset.state = "ready";
+    slot.appendChild(swapSelectorEl().wrap);
+    refreshSwapSelector();
     slot.appendChild(el("div", "muted", `Curve status ${status} — trading is not available in this state.`));
   }
 }
@@ -2224,7 +2774,7 @@ function renderSwapForm(): void {
 function refreshSwapLive(): void {
   if (state.view !== "swap") return;
   refreshSwapSelector();
-  if (!swapSelectedLaunch() && state.launches.length > 0) {
+  if (!swapSelectedLaunch() && !state.swapWrap && state.launches.length > 0) {
     const top = topByMcap();
     if (top) {
       state.swapCurve = top.curve;
@@ -2246,50 +2796,9 @@ function renderSwap(): void {
   head.appendChild(el("h1", "swap-title", "Swap"));
   head.appendChild(el("p", "muted swap-sub", "Trade any launch on the curve or the pool — live quotes from the chain, no fake numbers."));
   view.appendChild(head);
+  // The card holds only the form slot now: the Uniswap shell (selector
+  // pills, flip, panels, slippage gear) is built by the form itself.
   const card = el("div", "panel swap-card");
-  // Token selector.
-  const selWrap = el("div", "swap-selector");
-  const selBtn = el("button", "btn swap-token-btn") as HTMLButtonElement;
-  selBtn.type = "button";
-  selBtn.setAttribute("aria-haspopup", "listbox");
-  selBtn.setAttribute("aria-expanded", "false");
-  const selMenu = el("div", "swap-menu hidden");
-  selMenu.setAttribute("role", "listbox");
-  const search = el("input", "swap-menu-search") as HTMLInputElement;
-  search.type = "search";
-  search.placeholder = "Search by name, ticker or address";
-  search.setAttribute("aria-label", "Search tokens");
-  search.oninput = () => fillSwapMenu(search.value);
-  const list = el("div", "swap-menu-list");
-  selMenu.append(search, list);
-  selWrap.append(selBtn, selMenu);
-  selBtn.onclick = () => {
-    if (selMenu.classList.contains("hidden")) {
-      closeWalletMenu();
-      closeMobileNav();
-      search.value = "";
-      fillSwapMenu("");
-      selMenu.classList.remove("hidden");
-      selBtn.setAttribute("aria-expanded", "true");
-      search.focus();
-    } else {
-      closeSwapMenu();
-    }
-  };
-  card.appendChild(selWrap);
-  // Flip direction (Uniswap-style ⇅ between the token and the pay field).
-  const flipRow = el("div", "swap-flip-row");
-  const flipBtn = el("button", "btn icon-btn swap-flip", "⇅") as HTMLButtonElement;
-  flipBtn.type = "button";
-  flipBtn.title = "Flip direction (buy / sell)";
-  flipBtn.setAttribute("aria-label", "Flip swap direction");
-  flipBtn.onclick = () => {
-    swapDirection = swapDirection === "buy" ? "sell" : "buy";
-    swapFormHandle?.setDirection(swapDirection);
-  };
-  flipRow.appendChild(flipBtn);
-  card.appendChild(flipRow);
-  // Swap form slot.
   const slot = el("div", "swap-form-slot");
   swapSlotEl = slot;
   card.appendChild(slot);
@@ -2615,6 +3124,12 @@ function detailTabs(
     body.innerHTML = "";
     const cf = l.curveData!;
     const st = cf.state;
+    // Fully-diluted value (price × total supply) — shown here for honesty,
+    // while the headline Market cap uses circulating supply instead.
+    const priceNum = l.price ? Number.parseFloat(l.price) : NaN;
+    const fdv = Number.isFinite(priceNum)
+      ? priceNum * (Number(l.meta!.totalSupply) / 10 ** l.meta!.decimals)
+      : null;
     const rows: Array<[string, HTMLElement | string]> = [
       ["Token", explorerLink(l.token)],
       ["Curve", explorerLink(l.curve)],
@@ -2622,6 +3137,7 @@ function detailTabs(
       ["Config", `#${l.configId.toString()}`],
       ["Launch block", l.blockNumber.toString()],
       ["Total supply", `${fmtAmount(l.meta!.totalSupply, l.meta!.decimals)} ${l.meta!.symbol}`],
+      ["Fully diluted value", fdv === null ? "…" : `${formatDisplayNumber(fdv)} ETH`],
       ["Decimals", String(l.meta!.decimals)],
       ["Current fee", `${st.currentFeeBps} bps (dynamic ${st.currentDynamicFeeBps} bps)`],
       ["Base reserve", `${fmtAmount(st.baseReserve, l.meta!.decimals)} ${l.meta!.symbol}`],
@@ -3487,6 +4003,8 @@ function showView(name: "discover" | "create" | "detail" | "profile" | "swap"): 
   // successful create) — its result lives in the new view, not behind it.
   closeReviewModal();
   state.view = name;
+  // Uniswap-style blob background lives on Detail and Swap only.
+  document.body.classList.toggle("bg-blobs", name === "detail" || name === "swap");
   for (const v of ["discover", "create", "detail", "profile", "swap"] as const) {
     $("#view-" + v).classList.toggle("hidden", v !== name);
   }
@@ -3497,8 +4015,8 @@ function showView(name: "discover" | "create" | "detail" | "profile" | "swap"): 
     $(`#tab-${t}`).classList.toggle("active", t === name);
     $(`#mnav-${t}`).classList.toggle("active", t === name);
   }
-  // "Recently viewed" is a discovery aid — it does not belong on Profile.
-  if (name === "profile") {
+  // "Recently viewed" is a discovery aid — it does not belong on Profile or Swap.
+  if (name === "profile" || name === "swap") {
     $("#recent-row").classList.add("hidden");
   } else {
     renderRecent();
@@ -3554,6 +4072,14 @@ function ensureBackgroundStarted(): void {
 }
 
 async function boot(): Promise<void> {
+  // Uniswap-style background blobs (Detail + Swap only — showView toggles
+  // body.bg-blobs). Decorative layer, created once, never intercepts clicks.
+  const blobs = document.createElement("div");
+  blobs.id = "bg-blobs";
+  for (const c of ["blob-green", "blob-purple", "blob-blue", "blob-rose"]) {
+    blobs.appendChild(el("div", `blob ${c}`));
+  }
+  document.body.prepend(blobs);
   renderWallet();
   showView("discover");
   initTheme();
@@ -3586,11 +4112,14 @@ async function boot(): Promise<void> {
     closeMobileNav();
   });
   // Token selector dropdown on the Swap page: close on outside click.
+  // Clicks on either pill toggle the menu themselves, so they are not
+  // "outside" — without this the document handler would close the menu
+  // right before the pill's toggle re-opens it.
   document.addEventListener("click", (e) => {
     const menu = document.querySelector(".swap-menu:not(.hidden)");
     if (!menu) return;
-    const wrap = menu.closest(".swap-selector");
-    if (wrap && wrap.contains(e.target as Node)) return;
+    const target = e.target as Element;
+    if (target.closest?.(".swap-selector, .swap-token-btn, .uni-pill")) return;
     closeSwapMenu();
   });
   // Wallet dropdown: close on outside click / Escape; arrow keys move between

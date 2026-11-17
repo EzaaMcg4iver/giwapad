@@ -74,8 +74,8 @@
   --badge-2-border: #6b5518;
   --badge-3: #79b8ff;
   --badge-3-border: #1f3a5f;
-  --candle-up: #26a69a;
-  --candle-down: #ef5350;
+  --candle-up: #22c55e;
+  --candle-down: #ef4444;
   --focus-ring-color: rgba(16, 185, 129, 0.45);
   --focus-ring: 0 0 0 3px var(--focus-ring-color);
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.45), 0 1px 3px 1px rgba(0, 0, 0, 0.25);
@@ -127,8 +127,8 @@
   --badge-2-border: #ffe082;
   --badge-3: #2563eb;
   --badge-3-border: #bfdbfe;
-  --candle-up: #089981;
-  --candle-down: #f23645;
+  --candle-up: #16a34a;
+  --candle-down: #dc2626;
   --focus-ring-color: rgba(4, 120, 87, 0.35);
   --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.08), 0 1px 3px rgba(16, 24, 40, 0.1);
   --shadow-2: 0 4px 8px rgba(16, 24, 40, 0.1), 0 8px 20px rgba(16, 24, 40, 0.08);
@@ -342,7 +342,7 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 .err-text { color: var(--err); }
 
 /* Price chart — SVG colors come from the theme variables so the chart
-   adapts to light/dark automatically. Up/down use the TradingView colors
+   adapts to light/dark automatically. Up/down use the classic green/red
    (--candle-up/--candle-down); the same pair colors every % change figure. */
 .chart-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 16px 0; }
 .chart-stat { background: var(--panel2); border-radius: var(--radius-md); padding: 10px 12px; }
@@ -511,10 +511,42 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 .balance-val { font-family: ui-monospace, monospace; font-size: var(--text-xs); }
 .detail-tabs .detail-tab-body { margin-top: 8px; }
 
-/* Candlestick chart colors (theme-aware, TradingView pair). */
+/* Detail page: no cards — every section (header stats, chart, Status,
+   Trade, tabs) renders flat on the page background, Uniswap-style. Only
+   the outer panel box and the stat-tile boxes go away; inner controls
+   (inputs, buttons, quote box, tabs, tables) keep their own backgrounds,
+   so everything stays usable and readable. */
+#view-detail .panel {
+  background: transparent;
+  box-shadow: none;
+  padding-left: 0;
+  padding-right: 0;
+}
+#view-detail .detail-stat {
+  background: transparent;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* Uniswap-style background: soft blurred pastel blobs behind the content,
+   on the Detail and Swap pages only (body.bg-blobs, toggled in showView).
+   Decorative only — fixed, behind everything, never intercepts clicks. */
+#bg-blobs { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; display: none; }
+body.bg-blobs #bg-blobs { display: block; }
+#bg-blobs .blob { position: absolute; border-radius: 50%; filter: blur(70px); }
+.blob-green { width: 480px; height: 480px; left: -120px; top: -80px; background: rgba(16, 185, 129, 0.22); }
+.blob-purple { width: 420px; height: 420px; right: -100px; top: 10%; background: rgba(139, 92, 246, 0.18); }
+.blob-blue { width: 400px; height: 400px; left: 6%; bottom: -140px; background: rgba(59, 130, 246, 0.16); }
+.blob-rose { width: 440px; height: 440px; right: 4%; bottom: -120px; background: rgba(244, 63, 94, 0.14); }
+[data-theme="dark"] .blob-green { background: rgba(16, 185, 129, 0.13); }
+[data-theme="dark"] .blob-purple { background: rgba(139, 92, 246, 0.11); }
+[data-theme="dark"] .blob-blue { background: rgba(59, 130, 246, 0.10); }
+[data-theme="dark"] .blob-rose { background: rgba(244, 63, 94, 0.09); }
+
+/* Candlestick chart colors (theme-aware, classic green/red pair). */
 .candle-up { fill: var(--candle-up); stroke: var(--candle-up); }
 .candle-down { fill: var(--candle-down); stroke: var(--candle-down); }
-.candle-wick { stroke-width: 1.5; }
+.candle-wick { stroke-width: 1; }
 .candle-body { stroke-width: 0; }
 .chart-lastline { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 4 3; }
 .chart-lastline.candle-up { stroke: var(--candle-up); }
@@ -707,11 +739,52 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 }
 .swap-token-row:hover { background: var(--panel2); }
 .swap-token-row:focus-visible { box-shadow: var(--focus-ring); }
-/* Flip direction: round button centered between the selector and the form. */
-.swap-flip-row { display: flex; justify-content: center; margin: 10px 0 2px; }
-.swap-flip { border-radius: 50%; font-size: 18px; }
-/* Swap entry points: full-width button on top cards; next to Trade in the table. */
-.swap-action { margin-top: 12px; width: 100%; justify-content: center; }
+/* Uniswap-style Swap page: two stacked panels + overlapping flip + big
+   full-width action. Green palette, Inter, both themes. The shell is
+   .uni-swap (built by uniSwapShell); the detail Trade panel is untouched. */
+.uni-swap { display: flex; flex-direction: column; gap: 4px; }
+.uni-toolbar { display: flex; justify-content: flex-end; }
+.uni-gear { width: 36px; height: 36px; min-height: 36px; font-size: 17px; }
+.uni-slip-row { display: flex; align-items: center; gap: 8px; margin: 2px 0 6px; font-size: var(--text-sm); color: var(--muted); }
+.uni-slip-row input { width: 84px; min-height: 36px; text-align: right; }
+.uni-panel { background: var(--panel2); border-radius: 16px; padding: 14px 16px 18px; }
+.uni-receive-panel { padding-top: 18px; }
+.uni-label { font-size: var(--text-sm); font-weight: 600; color: var(--muted); margin-bottom: 4px; }
+.uni-row { display: flex; align-items: center; gap: 12px; }
+.uni-amount {
+  flex: 1; min-width: 0; background: transparent; border: none;
+  padding: 0; min-height: 0; font-size: 28px; font-weight: 600; color: var(--text);
+}
+.uni-amount:focus { border-color: transparent; box-shadow: none; }
+.uni-amount::placeholder { color: var(--muted); }
+.uni-receive { flex: 1; min-width: 0; font-size: 28px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.uni-receive.uni-empty { color: var(--muted); }
+.uni-pill-slot { flex: none; display: flex; }
+.uni-pill {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 0;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 999px;
+  padding: 6px 10px; font-weight: 700; font-size: var(--text-base); color: var(--text);
+  cursor: pointer; white-space: nowrap;
+}
+.uni-pill:hover { border-color: var(--muted); }
+.uni-pill .token-tile-sm { width: 28px; height: 28px; }
+.uni-pill .monogram-sm { font-size: 15px; }
+/* The launch selector as a compact pill inside the panels. */
+.uni-swap .swap-token-btn { width: auto; min-height: 0; padding: 6px 10px; border-radius: 999px; background: var(--panel); }
+.uni-swap .swap-token-btn .token-tile-sm { width: 28px; height: 28px; }
+.uni-swap .swap-token-btn .monogram-sm { font-size: 15px; }
+.uni-panel .balance-row { margin-top: 8px; font-size: var(--text-sm); }
+/* Flip button straddling the two panels. */
+.uni-flip { position: relative; height: 0; display: flex; justify-content: center; z-index: 2; }
+.uni-flip-btn {
+  margin-top: -19px; width: 38px; height: 38px; min-height: 38px; border-radius: 50%;
+  font-size: 18px; background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow-1);
+}
+.uni-flip-btn:hover { border-color: var(--accent); color: var(--accent); }
+/* Quote details under the big receive amount (transparent inside the panel). */
+.uni-panel .quote-box { background: transparent; border: none; padding: 0; margin: 8px 0 0; font-size: 13px; }
+/* Big full-width action button. */
+.uni-action { width: 100%; justify-content: center; padding: 14px; font-size: 16px; font-weight: 700; border-radius: 14px; margin-top: 12px; }
 .missions-table td .btn + .btn { margin-left: 6px; }
 
 @media (max-width: 640px) {
