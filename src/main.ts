@@ -281,7 +281,7 @@ function renderRecent(): void {
   row.classList.remove("hidden");
   row.appendChild(el("span", "muted", "Recently viewed"));
   for (const l of recent) {
-    const chip = el("button", "btn chip recent-chip", `$${l.meta?.symbol ?? shortAddr(l.token)}`) as HTMLButtonElement;
+    const chip = el("button", "btn chip text recent-chip", `$${l.meta?.symbol ?? shortAddr(l.token)}`) as HTMLButtonElement;
     chip.onclick = () => { state.detailCurve = l.curve; showView("detail"); void renderDetail(l.curve); };
     row.appendChild(chip);
   }
@@ -866,6 +866,10 @@ function renderFlightLog(): void {
 }
 
 function renderDiscover(): void {
+  // "Near graduation" + "My launches" tabs are temporarily hidden
+  // (2026-11-17, user order) — never leave the table stuck on them.
+  if (state.missionsTab === "near") state.missionsTab = "trending";
+  if (state.mineOnly) state.mineOnly = false;
   const count = state.launches.length;
   $("#launch-count").textContent =
     `${filteredLaunches().length} of ${count} launches · ${state.scanStatus}`;
@@ -4003,8 +4007,6 @@ function showView(name: "discover" | "create" | "detail" | "profile" | "swap"): 
   // successful create) — its result lives in the new view, not behind it.
   closeReviewModal();
   state.view = name;
-  // Uniswap-style blob background lives on Detail and Swap only.
-  document.body.classList.toggle("bg-blobs", name === "detail" || name === "swap");
   for (const v of ["discover", "create", "detail", "profile", "swap"] as const) {
     $("#view-" + v).classList.toggle("hidden", v !== name);
   }
@@ -4072,14 +4074,16 @@ function ensureBackgroundStarted(): void {
 }
 
 async function boot(): Promise<void> {
-  // Uniswap-style background blobs (Detail + Swap only — showView toggles
-  // body.bg-blobs). Decorative layer, created once, never intercepts clicks.
+  // Uniswap-style background blobs (all pages — body.bg-blobs is set once
+  // here and never toggled). Decorative layer, created once, never
+  // intercepts clicks.
   const blobs = document.createElement("div");
   blobs.id = "bg-blobs";
   for (const c of ["blob-green", "blob-purple", "blob-blue", "blob-rose"]) {
     blobs.appendChild(el("div", `blob ${c}`));
   }
   document.body.prepend(blobs);
+  document.body.classList.add("bg-blobs");
   renderWallet();
   showView("discover");
   initTheme();

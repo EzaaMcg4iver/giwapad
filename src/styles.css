@@ -46,6 +46,7 @@
 :root {
   color-scheme: dark;
   --bg: #0d1117;
+  --topbar-bg: rgba(13, 17, 23, 0.72);
   --panel: #161b22;
   --panel2: #1c2330;
   --border: #2d333b;
@@ -99,6 +100,7 @@
 [data-theme="light"] {
   color-scheme: light;
   --bg: #f4f4f7;
+  --topbar-bg: rgba(244, 244, 247, 0.72);
   --panel: #ffffff;
   --panel2: #ececf1;
   --border: #d8d8e0;
@@ -160,7 +162,11 @@ h4 { margin: 4px 0 8px; font-size: var(--text-base); font-weight: 600; line-heig
   display: flex; align-items: center; gap: 12px; flex-wrap: nowrap;
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
-  background: var(--panel);
+  /* Frosted glass: the blob background shows through the navbar. Height,
+     layout, and contents are unchanged. */
+  background: var(--topbar-bg);
+  backdrop-filter: blur(12px) saturate(1.3);
+  -webkit-backdrop-filter: blur(12px) saturate(1.3);
   position: sticky; top: 0; z-index: 10;
 }
 .brand { display: flex; align-items: center; gap: 10px; flex: none; }
@@ -284,6 +290,10 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 .icon-btn svg { width: 20px; height: 20px; }
 .icon-btn:active { transform: scale(0.88) rotate(15deg); }
 .seg { display: flex; gap: 6px; margin: 8px 0; }
+/* Flat segmented buttons (timeframes, Buy/Sell, Log, detail tabs):
+   inactive is plain text, active keeps the green fill. */
+.btn.seg-btn:not(.active) { background: transparent; border-color: transparent; }
+.btn.seg-btn:not(.active):hover { background: transparent; border-color: transparent; filter: none; }
 .seg-btn.active { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; }
 .seg-btn.active:hover { border-color: var(--accent-solid); }
 
@@ -345,7 +355,8 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
    adapts to light/dark automatically. Up/down use the classic green/red
    (--candle-up/--candle-down); the same pair colors every % change figure. */
 .chart-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 16px 0; }
-.chart-stat { background: var(--panel2); border-radius: var(--radius-md); padding: 10px 12px; }
+/* Flat chart stat boxes (no card background — detail page is cardless). */
+.chart-stat { background: transparent; padding: 10px 0; }
 .chart-stat-k { font-size: var(--text-xs); color: var(--muted); }
 .chart-stat-v { font-size: var(--text-base); font-weight: 600; margin-top: 2px; word-break: break-word; }
 .chart-up { color: var(--candle-up); }
@@ -528,8 +539,24 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
   padding-right: 0;
 }
 
+/* Discover page: no cards either — hero, Top-by-mcap cards, and the
+   Flight log panel blend with the blob background, same flat treatment
+   as the detail page. The Missions table was already flat (no card
+   background). Content, pills, Trade buttons, and clicks are unchanged;
+   hover/active no longer lift the card (no shadow to lift into). */
+#view-discover .card,
+#view-discover .panel {
+  background: transparent;
+  box-shadow: none;
+}
+#view-discover .card:hover,
+#view-discover .card:active {
+  box-shadow: none;
+  transform: none;
+}
+
 /* Uniswap-style background: soft blurred pastel blobs behind the content,
-   on the Detail and Swap pages only (body.bg-blobs, toggled in showView).
+   on all pages (body.bg-blobs, set once in boot).
    Decorative only — fixed, behind everything, never intercepts clicks. */
 #bg-blobs { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; display: none; }
 body.bg-blobs #bg-blobs { display: block; }
