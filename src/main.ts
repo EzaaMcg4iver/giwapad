@@ -67,7 +67,7 @@ import {
 import { friendlyErrorMessage } from "./errors";
 import { formatDisplayNumber } from "./format";
 import { ICON_COPY, ICON_EXTERNAL_LINK, ICON_SEARCH } from "./icons";
-import { applyTheme, currentTheme, initTheme, toggleTheme } from "./theme";
+import { initTheme, toggleTheme } from "./theme";
 import {
   buildChartSvg,
   buildCandles,
@@ -1215,19 +1215,12 @@ async function renderProfile(): Promise<void> {
   const run = ++profileRun;
   const view = $("#view-profile");
   view.innerHTML = "";
-  // Header row: "Profile" title + the theme toggle (moved here from the
-  // navbar 2026-11-17; same round icon button, same id). The button is
-  // rebuilt on every render (the view is cleared above), so its
-  // icon/title are re-applied right after appending.
+  // Header row: "Profile" title only. The theme toggle lives in the
+  // navbar next to the wallet button (moved back 2026-11-17); its
+  // icon/title are set by applyTheme() at boot.
   const headRow = el("div", "profile-head");
   headRow.appendChild(el("h2", "", "Profile"));
-  const themeBtn = el("button", "btn icon-btn") as HTMLButtonElement;
-  themeBtn.id = "theme-toggle";
-  themeBtn.setAttribute("aria-label", "Toggle light/dark theme");
-  themeBtn.onclick = () => toggleTheme();
-  headRow.appendChild(themeBtn);
   view.appendChild(headRow);
-  applyTheme(currentTheme());
 
   if (!state.account) {
     view.appendChild(el("div", "muted", "Connect your wallet to see your launches and token holdings on GIWA Sepolia."));
@@ -4096,6 +4089,10 @@ async function boot(): Promise<void> {
   renderWallet();
   showView("discover");
   initTheme();
+  // Static navbar theme toggle (next to the wallet button): its icon/title
+  // were set by initTheme() above via applyTheme().
+  const themeToggle = document.querySelector<HTMLButtonElement>("#theme-toggle");
+  if (themeToggle) themeToggle.onclick = () => toggleTheme();
 
   $("#tab-discover").onclick = () => { try { history.replaceState(null, "", "#discover"); } catch { /* non-fatal */ } showView("discover"); renderDiscover(); ensureBackgroundStarted(); };
   $("#tab-create").onclick = () => { try { history.replaceState(null, "", "#create"); } catch { /* non-fatal */ } showView("create"); void loadConfigsForForm(); };

@@ -207,7 +207,10 @@ h4 { margin: 4px 0 8px; font-size: var(--text-base); font-weight: 600; line-heig
 [data-theme="light"] .tab.active:hover { background: rgba(109, 40, 217, 0.16); border-color: rgba(109, 40, 217, 0.5); }
 .tab:active { transform: scale(0.97); }
 .tab:focus-visible { box-shadow: var(--focus-ring); }
-.wallet { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
+/* Theme toggle + wallet sit together at the right end of the navbar,
+   the toggle immediately left of the wallet button. */
+.header-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
+.wallet { display: flex; align-items: center; gap: 8px; flex: none; }
 /* A failed-connect error renders inside the wallet box; keep it from eating
    the single header row. */
 .wallet .error { max-width: 300px; padding: 8px 10px; font-size: var(--text-sm); }
@@ -632,7 +635,6 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 /* Profile header row: "Profile" title with the theme toggle at the right
    (moved here from the navbar 2026-11-17; same round icon button). */
 #view-profile .profile-head { display: flex; align-items: center; gap: 10px; }
-#view-profile .profile-head #theme-toggle { margin-left: auto; }
 
 /* Uniswap-style background: soft blurred pastel blobs behind the content,
    on all pages (body.bg-blobs, set once in boot).
@@ -692,7 +694,6 @@ body.bg-blobs #bg-blobs { display: block; }
    overflow at any width. */
 @media (max-width: 900px) {
   .topbar { flex-wrap: wrap; padding: 10px 12px; gap: 10px; }
-  .wallet { margin-left: 0; }
   .header-search { order: 3; flex: 1 1 100%; max-width: none; }
   .tabs { display: none; }
   .btn.nav-toggle { display: inline-flex; }
