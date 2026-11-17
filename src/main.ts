@@ -67,7 +67,7 @@ import {
 import { friendlyErrorMessage } from "./errors";
 import { formatDisplayNumber } from "./format";
 import { ICON_COPY, ICON_EXTERNAL_LINK, ICON_SEARCH } from "./icons";
-import { initTheme, toggleTheme } from "./theme";
+import { applyTheme, currentTheme, initTheme, toggleTheme } from "./theme";
 import {
   buildChartSvg,
   buildCandles,
@@ -1215,7 +1215,19 @@ async function renderProfile(): Promise<void> {
   const run = ++profileRun;
   const view = $("#view-profile");
   view.innerHTML = "";
-  view.appendChild(el("h2", "", "Profile"));
+  // Header row: "Profile" title + the theme toggle (moved here from the
+  // navbar 2026-11-17; same round icon button, same id). The button is
+  // rebuilt on every render (the view is cleared above), so its
+  // icon/title are re-applied right after appending.
+  const headRow = el("div", "profile-head");
+  headRow.appendChild(el("h2", "", "Profile"));
+  const themeBtn = el("button", "btn icon-btn") as HTMLButtonElement;
+  themeBtn.id = "theme-toggle";
+  themeBtn.setAttribute("aria-label", "Toggle light/dark theme");
+  themeBtn.onclick = () => toggleTheme();
+  headRow.appendChild(themeBtn);
+  view.appendChild(headRow);
+  applyTheme(currentTheme());
 
   if (!state.account) {
     view.appendChild(el("div", "muted", "Connect your wallet to see your launches and token holdings on GIWA Sepolia."));
@@ -1332,7 +1344,7 @@ async function renderProfile(): Promise<void> {
       holdBox.textContent = "Kamu belum memegang token apa pun dari launch yang dikenal di ConkFun.";
     } else {
       for (const [token, h] of state.holdings) {
-        const r = el("div", "row");
+        const r = el("div", "row hold-row");
         r.style.cursor = "pointer";
         r.appendChild(el("span", "k", h.symbol));
         r.appendChild(el("span", "v", `${fmtAmount(h.balance, h.decimals)} ${h.symbol}`));
@@ -4084,8 +4096,6 @@ async function boot(): Promise<void> {
   renderWallet();
   showView("discover");
   initTheme();
-  const themeBtn = $("#theme-toggle") as HTMLButtonElement;
-  themeBtn.onclick = () => toggleTheme();
 
   $("#tab-discover").onclick = () => { try { history.replaceState(null, "", "#discover"); } catch { /* non-fatal */ } showView("discover"); renderDiscover(); ensureBackgroundStarted(); };
   $("#tab-create").onclick = () => { try { history.replaceState(null, "", "#create"); } catch { /* non-fatal */ } showView("create"); void loadConfigsForForm(); };

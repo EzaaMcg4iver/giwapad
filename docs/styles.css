@@ -600,6 +600,40 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
   transform: none;
 }
 
+/* Profile page: no cards either — the Wallet panel and the "Launch saya"
+   table blend with the blob background, same flat treatment as the
+   Discover and detail pages. Buttons/inputs keep their own styling. */
+#view-profile .panel {
+  background: transparent;
+  box-shadow: none;
+  padding-left: 0;
+  padding-right: 0;
+}
+/* The "Launch saya" table reuses .missions-table, but its address cells
+   carry the .addr chip class (pill background). On Discover the same
+   addresses are plain text — strip the pill here, keep the monospace.
+   Scoped to table cells only, so the Wallet address chip keeps its own. */
+#view-profile .missions-table td.addr {
+  background: transparent;
+  border-radius: 0;
+}
+/* Holdings ("Token yang saya pegang"): each holding is a neat row like a
+   "Launch saya" table row — separator, table-row padding, bold symbol,
+   right-aligned monospace amount, transparent background. Values, order
+   and clicks unchanged; fmtAmount already is formatDisplayNumber. */
+#view-profile .hold-row {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+}
+#view-profile .hold-row:hover { background: var(--panel2); }
+#view-profile .hold-row .k { font-weight: 700; color: var(--text); }
+#view-profile .hold-row .v { color: var(--text); }
+/* Profile header row: "Profile" title with the theme toggle at the right
+   (moved here from the navbar 2026-11-17; same round icon button). */
+#view-profile .profile-head { display: flex; align-items: center; gap: 10px; }
+#view-profile .profile-head #theme-toggle { margin-left: auto; }
+
 /* Uniswap-style background: soft blurred pastel blobs behind the content,
    on all pages (body.bg-blobs, set once in boot).
    Decorative only — fixed, behind everything, never intercepts clicks. */
@@ -652,13 +686,12 @@ body.bg-blobs #bg-blobs { display: block; }
   .header-search kbd { display: none; }
 }
 
-/* Tablet and below: the header is two clean rows — brand + theme + Connect +
+/* Tablet and below: the header is two clean rows — brand + Connect +
    hamburger on top, full-width search below. Discover / Create Launch
    live in the hamburger dropdown, so nothing wraps. No horizontal
    overflow at any width. */
 @media (max-width: 900px) {
   .topbar { flex-wrap: wrap; padding: 10px 12px; gap: 10px; }
-  #theme-toggle { margin-left: auto; }
   .wallet { margin-left: 0; }
   .header-search { order: 3; flex: 1 1 100%; max-width: none; }
   .tabs { display: none; }
