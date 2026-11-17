@@ -504,6 +504,7 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 .flight-launch { color: var(--accent); border-color: var(--accent); }
 .flight-symbol { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .flight-amount { margin-left: auto; font-family: ui-monospace, monospace; font-size: var(--text-xs); }
+.flight-trader { flex: none; font-family: ui-monospace, monospace; font-size: var(--text-xs); white-space: nowrap; }
 .flight-age { flex: none; }
 
 /* Detail view. */

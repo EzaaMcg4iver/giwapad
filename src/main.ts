@@ -799,6 +799,7 @@ interface FlightEntry {
   amountWeth: number;
   curve: string;
   creator?: string;
+  trader?: string;
 }
 
 function buildFlightEntries(): FlightEntry[] {
@@ -812,6 +813,7 @@ function buildFlightEntries(): FlightEntry[] {
       symbol: l?.meta?.symbol ?? shortAddr(t.curve),
       amountWeth: Number(t.baseForQuote ? t.amountOut : t.amountIn) / 1e18,
       curve: t.curve,
+      trader: t.trader,
     });
   }
   for (const l of state.launches) {
@@ -859,6 +861,18 @@ function renderFlightLog(): void {
     row.appendChild(el("span", "flight-amount", e.kind === "launch"
       ? (e.creator ? shortAddr(e.creator) : "")
       : `${formatDisplayNumber(e.amountWeth)} ETH`));
+    if (e.kind !== "launch" && e.trader) {
+      const traderSpan = el("span", "flight-trader");
+      const traderLink = explorerLink(e.trader);
+      // The link opens the explorer in a new tab; keep the click (and an
+      // Enter/Space keypress on the link) from also opening the detail page.
+      traderLink.addEventListener("click", (ev) => ev.stopPropagation());
+      traderLink.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") ev.stopPropagation();
+      });
+      traderSpan.appendChild(traderLink);
+      row.appendChild(traderSpan);
+    }
     row.appendChild(el("span", "muted flight-age", e.timeMs === null ? "—" : formatAge(e.timeMs, nowMs)));
     list.appendChild(row);
   }
