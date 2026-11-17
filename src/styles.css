@@ -186,9 +186,25 @@ h4 { margin: 4px 0 8px; font-size: var(--text-base); font-weight: 600; line-heig
   transition: background-color 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
 }
 .tab svg { width: 18px; height: 18px; flex: none; }
-.tab.active { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; }
+/* Navbar active tab is liquid glass, not a solid fill: translucent purple
+   tint + blur, purple text, soft purple glow. Inactive tabs stay plain text. */
+.tab.active {
+  background: rgba(167, 139, 250, 0.14);
+  border-color: rgba(167, 139, 250, 0.35);
+  color: #c4b5fd;
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  backdrop-filter: blur(12px) saturate(1.4);
+  box-shadow: 0 4px 18px rgba(124, 58, 237, 0.28);
+}
 .tab:hover { border-color: var(--border); }
-.tab.active:hover { border-color: var(--accent-solid); }
+.tab.active:hover { background: rgba(167, 139, 250, 0.22); border-color: rgba(167, 139, 250, 0.55); }
+[data-theme="light"] .tab.active {
+  background: rgba(109, 40, 217, 0.10);
+  border-color: rgba(109, 40, 217, 0.35);
+  color: #6d28d9;
+  box-shadow: 0 4px 16px rgba(109, 40, 217, 0.18);
+}
+[data-theme="light"] .tab.active:hover { background: rgba(109, 40, 217, 0.16); border-color: rgba(109, 40, 217, 0.5); }
 .tab:active { transform: scale(0.97); }
 .tab:focus-visible { box-shadow: var(--focus-ring); }
 .wallet { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
@@ -201,6 +217,27 @@ h4 { margin: 4px 0 8px; font-size: var(--text-base); font-weight: 600; line-heig
    Profile + Disconnect. Right-aligned under the button, inside the viewport. */
 .wallet-menu-wrap { position: relative; display: flex; }
 .wallet-btn { font-family: ui-monospace, monospace; font-size: 14px; }
+/* Header wallet button (Connect + connected address) is liquid glass, not a
+   solid fill — same treatment as the active nav tab. Scoped to #wallet-status
+   so .btn.primary stays solid everywhere else (hero, tables, Trade panels). */
+#wallet-status .btn.primary {
+  background: rgba(167, 139, 250, 0.14);
+  border-color: rgba(167, 139, 250, 0.35);
+  color: #c4b5fd;
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  backdrop-filter: blur(12px) saturate(1.4);
+  box-shadow: 0 4px 18px rgba(124, 58, 237, 0.28);
+}
+#wallet-status .btn.primary:hover { background: rgba(167, 139, 250, 0.22); border-color: rgba(167, 139, 250, 0.55); filter: none; }
+#wallet-status .btn.primary:focus-visible { box-shadow: var(--focus-ring), 0 4px 18px rgba(124, 58, 237, 0.28); }
+[data-theme="light"] #wallet-status .btn.primary {
+  background: rgba(109, 40, 217, 0.10);
+  border-color: rgba(109, 40, 217, 0.35);
+  color: #6d28d9;
+  box-shadow: 0 4px 16px rgba(109, 40, 217, 0.18);
+}
+[data-theme="light"] #wallet-status .btn.primary:hover { background: rgba(109, 40, 217, 0.16); border-color: rgba(109, 40, 217, 0.5); }
+[data-theme="light"] #wallet-status .btn.primary:focus-visible { box-shadow: var(--focus-ring), 0 4px 16px rgba(109, 40, 217, 0.18); }
 .wallet-menu {
   position: absolute; top: calc(100% + 8px); right: 0; z-index: 20;
   min-width: 200px; padding: 6px;
@@ -474,6 +511,13 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 .missions-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 24px 0 12px; }
 .missions-head h2 { margin: 0; }
 .missions-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+/* Missions header is flat: inactive tabs and Refresh are plain text (no
+   pill/card background), active tab keeps the purple fill. Scoped to
+   .missions-head so .chip/.btn keep their pill treatment elsewhere. */
+.missions-head .btn.chip:not(.active) { background: transparent; border-color: transparent; }
+.missions-head .btn.chip:not(.active):hover { background: var(--accent-soft); border-color: transparent; filter: none; }
+.missions-head #refresh-btn { background: transparent; border-color: transparent; }
+.missions-head #refresh-btn:hover { background: var(--accent-soft); border-color: transparent; filter: none; }
 #refresh-btn { margin-left: auto; }
 .table-scroll { overflow-x: auto; border-radius: var(--radius); }
 .missions-table, .trades-table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 760px; }

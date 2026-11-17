@@ -1321,7 +1321,7 @@ async function renderProfile(): Promise<void> {
     if (!stillHere()) return;
     holdBox.innerHTML = "";
     if (state.holdings.size === 0) {
-      holdBox.textContent = "Kamu belum memegang token apa pun dari launch yang dikenal di GiwaPad.";
+      holdBox.textContent = "Kamu belum memegang token apa pun dari launch yang dikenal di ConkFun.";
     } else {
       for (const [token, h] of state.holdings) {
         const r = el("div", "row");
@@ -1340,7 +1340,7 @@ async function renderProfile(): Promise<void> {
   }
 
   if (mine.length === 0 && state.holdings.size === 0) {
-    view.appendChild(el("div", "empty", "Kamu belum punya launch dan belum memegang token apa pun dari launch yang dikenal di GiwaPad."));
+    view.appendChild(el("div", "empty", "Kamu belum punya launch dan belum memegang token apa pun dari launch yang dikenal di ConkFun."));
   }
 }
 
@@ -4173,6 +4173,8 @@ async function boot(): Promise<void> {
     const target = e.target as HTMLElement | null;
     if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
     e.preventDefault();
+    // Skip when the search box is hidden (temporarily hidden 2026-11-17).
+    if (headerSearch.closest(".header-search")?.classList.contains("hidden")) return;
     headerSearch.focus();
   });
   for (const t of ["trending", "new", "near", "graduated"] as const) {
