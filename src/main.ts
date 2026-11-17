@@ -2952,43 +2952,18 @@ async function renderDetail(curve: string): Promise<void> {
       : "Holders with a non-zero balance (curve contract excluded)";
   });
 
-  // Main grid: chart (left) + Status / Trade (right).
+  // Main grid: chart (left) + Trade (right).
   const grid = el("div", "detail-grid");
   const leftCol = el("div", "detail-left");
   leftCol.appendChild(chartPanel(l));
   grid.appendChild(leftCol);
   const rightCol = el("div", "detail-right");
-  rightCol.appendChild(statusPanel(l));
   rightCol.appendChild(tradePanel(l));
   grid.appendChild(rightCol);
   view.appendChild(grid);
 
   // Tabs: Trades / Holders / Tech sheet.
   view.appendChild(detailTabs(l, holdersLoad));
-}
-
-/** Status panel: fuel gauge, graduation state, pool link when graduated. */
-function statusPanel(l: EnrichedLaunch): HTMLElement {
-  const wrap = el("div", "panel");
-  const head = el("div", "chart-head");
-  head.appendChild(el("h3", "", "Status"));
-  head.appendChild(el("span", `badge status-${l.curveData!.state.status}`, curveStatusLabel(l.curveData!.state.status)));
-  wrap.appendChild(head);
-  const fuelPct = l.curveData!.progress.progressBps / 100;
-  const fuelRow = el("div", "hero-fuel-row");
-  fuelRow.appendChild(el("span", "muted", "Fuel"));
-  fuelRow.appendChild(el("span", "hero-fuel-pct", `${fuelPct.toFixed(1)}%`));
-  wrap.appendChild(fuelRow);
-  wrap.appendChild(fuelSegments(fuelPct));
-  if (l.curveData!.state.status === 3) {
-    wrap.appendChild(el("div", "muted", "Trading on the pool:"));
-    const poolLine = el("div", "");
-    poolLine.appendChild(explorerLink(l.curveData!.state.canonicalPool, shortAddr(l.curveData!.state.canonicalPool)));
-    wrap.appendChild(poolLine);
-  } else {
-    wrap.appendChild(el("div", "muted", "Trading on the curve — graduation migrates liquidity to the pool."));
-  }
-  return wrap;
 }
 
 type HoldersResult =
