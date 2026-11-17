@@ -842,7 +842,7 @@ function renderFlightLog(): void {
   const box = $("#home-flight");
   box.innerHTML = "";
   const head = el("div", "flight-head");
-  head.appendChild(el("h3", "", "Flight log"));
+  head.appendChild(el("h3", "", "Live Trades"));
   head.appendChild(el("span", "live-dot", ""));
   box.appendChild(head);
   const entries = buildFlightEntries();
@@ -4086,6 +4086,18 @@ async function boot(): Promise<void> {
   }
   document.body.prepend(blobs);
   document.body.classList.add("bg-blobs");
+  // Slim testnet disclaimer banner at the very top of the page, above the
+  // navbar (user order 2026-11-17). Persistent, no close button. The link
+  // reuses the existing FAUCET_URL (same target as the wallet-menu Faucet).
+  const banner = el("div", "testnet-banner");
+  banner.appendChild(document.createTextNode("GIWA Sepolia testnet. Test ETH only, nothing here is worth real money. "));
+  const faucetLink = document.createElement("a");
+  faucetLink.href = FAUCET_URL;
+  faucetLink.target = "_blank";
+  faucetLink.rel = "noopener";
+  faucetLink.textContent = "Get free test ETH →";
+  banner.appendChild(faucetLink);
+  document.body.insertBefore(banner, document.querySelector(".topbar"));
   renderWallet();
   showView("discover");
   initTheme();

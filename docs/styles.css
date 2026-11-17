@@ -27,17 +27,20 @@
  *   background tints for the same "active" meaning.
  * - Shadows: one level for cards (--shadow-1), one for floating layers
  *   (--shadow-2: menus, modal). Nothing else gets a shadow.
- * - Spacing scale: 4 / 8 / 10 / 12 / 16 / 20 / 24 px (gaps, padding).
+ * - Spacing scale: 4 / 8 / 10 / 12 / 14 / 16 / 20 / 24 px (gaps, padding).
  * - Corner radius: 4px micro, 8px small, 10px controls, 12px cards
  *   (--radius), 16px modal, 999px pills.
- * - Type scale: 12px micro, 13px small, 15px body, 16px large, 18px
- *   section, 20px title, 26px symbol, 32px page title. No half-pixel sizes.
+ * - Type scale: 11px micro, 12px small, 13px body, 14px large, 16px
+ *   section, 18px title, 22px symbol, 28px page title. No half-pixel sizes.
+ *   (Stepped down twice on 2026-11-17, user order: noticeably more compact,
+ *   calibrated to a dense launchpad feel — sizes only, no restyle.)
  * - Breakpoints: 640px (phones: single column, wrapped header),
  *   390px (small phones: tighter type and padding).
  * - One button system: .btn (tonal), .btn.primary (filled accent),
  *   .btn.text (borderless); .tab / .chip / .seg-btn share the same
  *   active treatment (filled accent + white text).
- * - Touch targets are at least 40px (44px for the header icon button).
+ * - Touch targets are at least 36px (44px for the header icon button and
+ *   form controls).
  */
 
 /* Inter is loaded from the Google Fonts CDN (see <head> in index.html);
@@ -87,14 +90,14 @@
   --radius-md: 10px;
   --radius-xl: 16px;
   --radius-pill: 999px;
-  --text-xs: 12px;
-  --text-sm: 13px;
-  --text-base: 15px;
-  --text-lg: 16px;
-  --text-xl: 18px;
-  --text-2xl: 20px;
-  --text-3xl: 26px;
-  --text-4xl: 32px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-lg: 14px;
+  --text-xl: 16px;
+  --text-2xl: 18px;
+  --text-3xl: 22px;
+  --text-4xl: 28px;
 }
 
 [data-theme="light"] {
@@ -158,9 +161,29 @@ h2 { margin: 8px 0 4px; font-size: var(--text-2xl); font-weight: 700; line-heigh
 h3 { margin: 4px 0 8px; font-size: var(--text-lg); font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; }
 h4 { margin: 4px 0 8px; font-size: var(--text-base); font-weight: 600; line-height: 1.3; }
 
+/* Slim testnet disclaimer banner at the very top of the page, above the
+   navbar. Persistent, no close button. Theme-aware via the same vars as
+   the rest of the chrome; the faucet link uses the accent color. */
+.testnet-banner {
+  padding: 6px 12px;
+  text-align: center;
+  font-size: var(--text-sm);
+  line-height: 1.4;
+  color: var(--muted);
+  background: var(--panel2);
+  border-bottom: 1px solid var(--border);
+}
+.testnet-banner a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+.testnet-banner a:hover { color: var(--link); }
+
 .topbar {
   display: flex; align-items: center; gap: 12px; flex-wrap: nowrap;
-  padding: 8px 16px;
+  padding: 6px 12px;
   border-bottom: 1px solid var(--border);
   /* Frosted glass: the blob background shows through the navbar. Height,
      layout, and contents are unchanged. */
@@ -171,21 +194,21 @@ h4 { margin: 4px 0 8px; font-size: var(--text-base); font-weight: 600; line-heig
 }
 .brand { display: flex; align-items: center; gap: 10px; flex: none; }
 .logo {
-  width: 32px; height: 32px; border-radius: var(--radius-sm); flex: none;
+  width: 26px; height: 26px; border-radius: var(--radius-sm); flex: none;
   background: var(--accent-solid);
   display: inline-flex; align-items: center; justify-content: center;
 }
-.logo svg { width: 22px; height: 22px; display: block; }
+.logo svg { width: 18px; height: 18px; display: block; }
 .brand-name { font-size: var(--text-2xl); font-weight: 800; letter-spacing: 0.3px; }
 .tabs { display: flex; gap: 6px; margin-left: 4px; flex: none; }
 .tab {
   background: transparent; border: 1px solid transparent; color: var(--text);
-  padding: 8px 14px; min-height: 40px; border-radius: var(--radius-pill); cursor: pointer;
+  padding: 7px 10px; min-height: 36px; border-radius: var(--radius-pill); cursor: pointer;
   font-size: var(--text-base); font-weight: 500;
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   transition: background-color 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
 }
-.tab svg { width: 18px; height: 18px; flex: none; }
+.tab svg { width: 14px; height: 14px; flex: none; }
 /* Navbar active tab is liquid glass, not a solid fill: translucent purple
    tint + blur, purple text, soft purple glow. Inactive tabs stay plain text. */
 .tab.active {
@@ -219,7 +242,7 @@ h4 { margin: 4px 0 8px; font-size: var(--text-base); font-weight: 600; line-heig
 /* Wallet dropdown (connected state): short address button, menu with
    Profile + Disconnect. Right-aligned under the button, inside the viewport. */
 .wallet-menu-wrap { position: relative; display: flex; }
-.wallet-btn { font-family: ui-monospace, monospace; font-size: 14px; }
+.wallet-btn { font-family: ui-monospace, monospace; font-size: 12px; }
 /* Header wallet button (Connect + connected address) is liquid glass, not a
    solid fill — same treatment as the active nav tab. Scoped to #wallet-status
    so .btn.primary stays solid everywhere else (hero, tables, Trade panels). */
@@ -260,7 +283,7 @@ a.wallet-menu-item { text-decoration: none; }
 .wallet-menu-item:focus-visible { box-shadow: var(--focus-ring); }
 /* Menu items can carry an icon (mobile nav) — constrain it like the tab icons;
    an unconstrained inline SVG would blow up to its 300px default width. */
-.wallet-menu-item svg { width: 18px; height: 18px; flex: none; }
+.wallet-menu-item svg { width: 14px; height: 14px; flex: none; }
 .wallet-menu-item.danger { color: var(--err); }
 /* Active menu item: the same filled treatment as tabs/chips/segmented. */
 .wallet-menu-item.active { color: #fff; background: var(--accent-solid); }
@@ -285,7 +308,7 @@ a.wallet-menu-item { text-decoration: none; }
    short label there instead. */
 .wallet-label-short { display: none; }
 
-main { max-width: 1240px; margin: 0 auto; padding: 20px; }
+main { max-width: 1240px; margin: 0 auto; padding: 12px; }
 .muted { color: var(--muted); }
 .hidden { display: none !important; }
 
@@ -297,7 +320,7 @@ main { max-width: 1240px; margin: 0 auto; padding: 20px; }
 input, select, textarea {
   background: var(--panel2); color: var(--text);
   border: 1px solid var(--border); border-radius: var(--radius-md);
-  padding: 9px 12px; min-height: 44px; font-size: var(--text-base); width: 100%;
+  padding: 8px 12px; min-height: 44px; font-size: var(--text-base); width: 100%;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: var(--focus-ring); }
@@ -307,12 +330,12 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 .btn {
   background: var(--panel2); color: var(--text);
   border: 1px solid var(--border); border-radius: var(--radius-md);
-  padding: 9px 16px; min-height: 40px; font-size: var(--text-base); font-weight: 500;
+  padding: 7px 12px; min-height: 36px; font-size: var(--text-base); font-weight: 500;
   letter-spacing: 0.01em; cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s, filter 0.15s, transform 0.1s;
 }
-.btn svg { width: 16px; height: 16px; flex: none; }
+.btn svg { width: 13px; height: 13px; flex: none; }
 .btn:hover { filter: brightness(1.12); }
 .btn:not(.primary):not(.text):hover { border-color: var(--muted); }
 .btn:active { transform: translateY(1px); }
@@ -328,7 +351,7 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
   flex-shrink: 0;
   transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s, filter 0.15s, transform 0.2s;
 }
-.icon-btn svg { width: 20px; height: 20px; }
+.icon-btn svg { width: 16px; height: 16px; }
 .icon-btn:active { transform: scale(0.88) rotate(15deg); }
 .seg { display: flex; gap: 6px; margin: 8px 0; }
 /* Flat segmented buttons (timeframes, Buy/Sell, Log, detail tabs):
@@ -341,10 +364,10 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 /* Cards: NO border anywhere. One treatment — panel surface + soft shadow.
    Clickable cards lift slightly on hover (deeper shadow); the focus cue is
    the glow ring, never an outline. */
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; margin-top: 16px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-top: 16px; }
 .card {
   background: var(--panel);
-  border-radius: var(--radius); padding: 16px; cursor: pointer;
+  border-radius: var(--radius); padding: 12px; cursor: pointer;
   box-shadow: var(--shadow-1);
   transition: box-shadow 0.15s, transform 0.15s;
 }
@@ -354,7 +377,7 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 .card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
 .card-title { font-weight: 600; font-size: var(--text-lg); word-break: break-word; }
 .badge {
-  font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
   padding: 3px 8px; border-radius: var(--radius-pill); white-space: nowrap;
   background: var(--panel2); border: 1px solid var(--border);
   display: inline-flex; align-items: center;
@@ -375,16 +398,16 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 
 .panel {
   background: var(--panel);
-  border-radius: var(--radius); padding: 16px; margin: 16px 0;
+  border-radius: var(--radius); padding: 12px; margin: 16px 0;
   box-shadow: var(--shadow-1);
 }
 .form { max-width: 620px; }
-.quote-box { background: var(--panel2); border-radius: var(--radius-md); padding: 10px 12px; margin: 10px 0; font-size: 14px; }
-.preview { background: var(--preview-bg); border-radius: var(--radius-md); padding: 12px; margin: 10px 0; font-size: 14px; }
+.quote-box { background: var(--panel2); border-radius: var(--radius-md); padding: 10px 12px; margin: 10px 0; font-size: 12px; }
+.preview { background: var(--preview-bg); border-radius: var(--radius-md); padding: 12px; margin: 10px 0; font-size: 12px; }
 .result { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
-.error { color: var(--err); background: var(--err-bg); border: 1px solid var(--err-border); border-radius: var(--radius-md); padding: 10px 12px; font-size: 14px; }
-.warn { color: var(--warn); background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: var(--radius-md); padding: 10px 12px; font-size: 14px; }
-.ok { color: var(--ok); background: var(--ok-bg); border: 1px solid var(--ok-border); border-radius: var(--radius-md); padding: 10px 12px; font-size: 14px; }
+.error { color: var(--err); background: var(--err-bg); border: 1px solid var(--err-border); border-radius: var(--radius-md); padding: 10px 12px; font-size: 12px; }
+.warn { color: var(--warn); background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: var(--radius-md); padding: 10px 12px; font-size: 12px; }
+.ok { color: var(--ok); background: var(--ok-bg); border: 1px solid var(--ok-border); border-radius: var(--radius-md); padding: 10px 12px; font-size: 12px; }
 .footer { text-align: center; padding: 24px 16px 32px; font-size: var(--text-xs); border-top: 1px solid var(--border); margin-top: 32px; }
 /* Chain status lives in the page footer now — a quiet one-line status, not
    a pill under the header. Plain colored text, no background or border. */
@@ -407,7 +430,7 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 .chart-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .chart-area { fill: var(--accent); opacity: 0.12; }
 .chart-grid { stroke: var(--border); stroke-width: 1; }
-.chart-label { fill: var(--muted); font-size: 11px; font-family: inherit; }
+.chart-label { fill: var(--muted); font-size: 10px; font-family: inherit; }
 .chart-dot { fill: var(--accent); stroke: var(--panel); stroke-width: 1.5; }
 .chart-note { font-size: var(--text-xs); margin-top: 6px; }
 /* Line/area chart trend: green when the period is up, red when down. */
@@ -446,12 +469,12 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 }
 
 @media (max-width: 390px) {
-  .brand-name { font-size: 17px; }
+  .brand-name { font-size: 16px; }
   .tab { font-size: var(--text-sm); padding: 7px 8px; gap: 5px; }
-  .tab svg { width: 15px; height: 15px; }
-  .btn { padding: 8px 12px; font-size: var(--text-sm); }
+  .tab svg { width: 12px; height: 12px; }
+  .btn { padding: 6px 10px; font-size: var(--text-sm); }
   .icon-btn { width: 40px; height: 40px; min-height: 40px; }
-  .panel { padding: 14px; }
+  .panel { padding: 10px; }
   .chart-stat-v { font-size: var(--text-base); }
 }
 
@@ -462,7 +485,7 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
   padding: 0 8px 0 12px; min-height: 44px;
 }
 .header-search:focus-within { border-color: var(--accent); box-shadow: var(--focus-ring); }
-.header-search svg { width: 18px; height: 18px; color: var(--muted); flex: none; }
+.header-search svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
 .header-search input {
   background: transparent; border: none; padding: 0; min-height: 42px; flex: 1; width: 100%; min-width: 0;
 }
@@ -476,15 +499,15 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 
 /* Token tile: metadata image when one exists, monogram otherwise. */
 .token-tile { position: relative; flex: none; border-radius: var(--radius-md); overflow: hidden; background: var(--panel2); }
-.token-tile-sm { width: 36px; height: 36px; }
+.token-tile-sm { width: 28px; height: 28px; }
 .token-tile-lg { width: 72px; height: 72px; border-radius: var(--radius); }
 .token-img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .monogram {
   width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
   color: #fff; font-weight: 800;
 }
-.monogram-sm { font-size: 18px; }
-.monogram-lg { font-size: 32px; }
+.monogram-sm { font-size: 14px; }
+.monogram-lg { font-size: 24px; }
 
 /* Segmented fuel bar (20 cells). */
 .fuel-seg { display: flex; gap: 2px; }
@@ -506,11 +529,11 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 /* Top-by-market-cap cards. */
 .top-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 16px; }
 .top-card-media { position: relative; margin-bottom: 10px; }
-.top-card-media .token-tile { width: 100%; height: 150px; border-radius: var(--radius-md); }
+.top-card-media .token-tile { width: 100%; height: 130px; border-radius: var(--radius-md); }
 .top-card-media .badge { position: absolute; right: 8px; bottom: 8px; background: var(--panel); }
 
 /* Home lower section: Missions table + Flight log side by side. */
-.home-lower { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; margin-top: 16px; }
+.home-lower { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 12px; align-items: start; margin-top: 16px; }
 .missions-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 24px 0 12px; }
 .missions-head h2 { margin: 0; }
 .missions-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -523,12 +546,12 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 .missions-head #refresh-btn:hover { background: var(--accent-soft); border-color: transparent; filter: none; }
 #refresh-btn { margin-left: auto; }
 .table-scroll { overflow-x: auto; border-radius: var(--radius); }
-.missions-table, .trades-table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 760px; }
+.missions-table, .trades-table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 760px; }
 .missions-table th, .trades-table th {
   text-align: left; font-size: var(--text-xs); color: var(--muted); font-weight: 600;
-  padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap;
+  padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap;
 }
-.missions-table td, .trades-table td { padding: 10px; border-bottom: 1px solid var(--border); white-space: nowrap; vertical-align: middle; }
+.missions-table td, .trades-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; vertical-align: middle; }
 .missions-row { cursor: pointer; }
 .missions-row:hover { background: var(--panel2); }
 .table-token { display: flex; align-items: center; gap: 10px; }
@@ -538,12 +561,17 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 
 /* Flight log. */
 #home-flight { margin: 0; position: sticky; top: 76px; }
-.flight-head { display: flex; align-items: center; gap: 8px; }
+/* Keep the Live Trades heading level with the Token heading: the aside's
+   12px panel padding + this 12px = the missions-head's 24px top margin, so
+   both heading rows start at the same y; 36px = the missions-head row
+   height (set by the chip buttons), so the h3 is vertically centered in
+   the same-height row as the h2 and their baselines line up. */
+.flight-head { display: flex; align-items: center; gap: 8px; margin-top: 12px; min-height: 36px; }
 .flight-head h3 { margin: 0; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--err); animation: live-pulse 1.6s infinite; }
 @keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .flight-list { display: flex; flex-direction: column; margin-top: 10px; max-height: 560px; overflow-y: auto; }
-.flight-row { display: flex; align-items: center; gap: 8px; padding: 8px 4px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: var(--text-sm); }
+.flight-row { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: var(--text-sm); }
 .flight-row:hover { background: var(--panel2); }
 .flight-row:focus-visible { background: var(--panel2); box-shadow: var(--focus-ring); }
 .flight-buy { color: var(--badge-1); border-color: var(--badge-1-border); }
@@ -659,7 +687,7 @@ body.bg-blobs #bg-blobs { display: block; }
 .chart-lastline { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 4 3; }
 .chart-lastline.candle-up { stroke: var(--candle-up); }
 .chart-lastline.candle-down { stroke: var(--candle-down); }
-.chart-lastlabel { fill: var(--accent); font-size: 11px; font-weight: 700; font-family: inherit; }
+.chart-lastlabel { fill: var(--accent); font-size: 10px; font-weight: 700; font-family: inherit; }
 .chart-lastlabel.candle-up { fill: var(--candle-up); }
 .chart-lastlabel.candle-down { fill: var(--candle-down); }
 
@@ -734,7 +762,7 @@ body.bg-blobs #bg-blobs { display: block; }
 .dropzone:focus-visible { box-shadow: var(--focus-ring); }
 .dropzone.drag { border-color: var(--accent); background: var(--accent-soft); }
 .dropzone-art { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 20px; color: var(--muted); background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px); background-size: 24px 24px; }
-.dropzone-art svg { width: 180px; height: auto; max-height: 220px; }
+.dropzone-art svg { width: 140px; height: auto; max-height: 200px; }
 .dropzone-caption { font-size: var(--text-sm); }
 .dropzone-img { width: 100%; max-height: 320px; object-fit: contain; display: block; background: var(--panel2); }
 .dropzone-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -743,7 +771,7 @@ body.bg-blobs #bg-blobs { display: block; }
 .preview-card { margin: 0 0 16px; }
 .preview-tags { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .preview-media { border-radius: var(--radius-md); overflow: hidden; background: var(--panel2); min-height: 180px; display: flex; align-items: center; justify-content: center; color: var(--muted); }
-.preview-media svg { width: 140px; height: auto; padding: 16px; }
+.preview-media svg { width: 100px; height: auto; padding: 10px; }
 .preview-media-img { width: 100%; height: 200px; object-fit: cover; display: block; }
 .preview-symbol { font-size: var(--text-2xl); font-weight: 800; margin-top: 12px; word-break: break-word; }
 .preview-by { margin-top: 10px; font-size: var(--text-sm); }
@@ -764,7 +792,7 @@ body.bg-blobs #bg-blobs { display: block; }
   .infobox + .infobox { border-left: none; border-top: 1px solid var(--border); }
   .field-row { grid-template-columns: 1fr; }
   .links-row { grid-template-columns: 1fr; }
-  .dropzone-art svg { width: 150px; }
+  .dropzone-art svg { width: 120px; }
 }
 
 /* Launch review modal: centered dialog on desktop, bottom sheet on phones. */
@@ -782,7 +810,7 @@ body.bg-blobs #bg-blobs { display: block; }
 }
 .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 16px 0; }
 .modal-head h2 { margin: 0; font-size: var(--text-xl); }
-.modal-x { width: 36px; height: 36px; min-height: 36px; font-size: 16px; }
+.modal-x { width: 32px; height: 32px; min-height: 32px; font-size: 15px; }
 .modal-body { padding: 12px 16px; overflow-y: auto; }
 .modal-body .row { align-items: flex-start; }
 .modal-warn { padding: 0 16px 12px; }
@@ -850,20 +878,20 @@ body.bg-blobs #bg-blobs { display: block; }
    .uni-swap (built by uniSwapShell); the detail Trade panel is untouched. */
 .uni-swap { display: flex; flex-direction: column; gap: 4px; }
 .uni-toolbar { display: flex; justify-content: flex-end; }
-.uni-gear { width: 36px; height: 36px; min-height: 36px; font-size: 17px; }
+.uni-gear { width: 32px; height: 32px; min-height: 32px; font-size: 15px; }
 .uni-slip-row { display: flex; align-items: center; gap: 8px; margin: 2px 0 6px; font-size: var(--text-sm); color: var(--muted); }
 .uni-slip-row input { width: 84px; min-height: 36px; text-align: right; }
-.uni-panel { background: var(--panel2); border-radius: 16px; padding: 14px 16px 18px; }
+.uni-panel { background: var(--panel2); border-radius: 16px; padding: 10px 12px 14px; }
 .uni-receive-panel { padding-top: 18px; }
 .uni-label { font-size: var(--text-sm); font-weight: 600; color: var(--muted); margin-bottom: 4px; }
 .uni-row { display: flex; align-items: center; gap: 12px; }
 .uni-amount {
   flex: 1; min-width: 0; background: transparent; border: none;
-  padding: 0; min-height: 0; font-size: 28px; font-weight: 600; color: var(--text);
+  padding: 0; min-height: 0; font-size: 26px; font-weight: 600; color: var(--text);
 }
 .uni-amount:focus { border-color: transparent; box-shadow: none; }
 .uni-amount::placeholder { color: var(--muted); }
-.uni-receive { flex: 1; min-width: 0; font-size: 28px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.uni-receive { flex: 1; min-width: 0; font-size: 26px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
 .uni-receive.uni-empty { color: var(--muted); }
 .uni-pill-slot { flex: none; display: flex; }
 .uni-pill {
@@ -873,24 +901,24 @@ body.bg-blobs #bg-blobs { display: block; }
   cursor: pointer; white-space: nowrap;
 }
 .uni-pill:hover { border-color: var(--muted); }
-.uni-pill .token-tile-sm { width: 28px; height: 28px; }
-.uni-pill .monogram-sm { font-size: 15px; }
+.uni-pill .token-tile-sm { width: 24px; height: 24px; }
+.uni-pill .monogram-sm { font-size: 13px; }
 /* The launch selector as a compact pill inside the panels. */
 .uni-swap .swap-token-btn { width: auto; min-height: 0; padding: 6px 10px; border-radius: 999px; background: var(--panel); }
-.uni-swap .swap-token-btn .token-tile-sm { width: 28px; height: 28px; }
-.uni-swap .swap-token-btn .monogram-sm { font-size: 15px; }
+.uni-swap .swap-token-btn .token-tile-sm { width: 24px; height: 24px; }
+.uni-swap .swap-token-btn .monogram-sm { font-size: 13px; }
 .uni-panel .balance-row { margin-top: 8px; font-size: var(--text-sm); }
 /* Flip button straddling the two panels. */
 .uni-flip { position: relative; height: 0; display: flex; justify-content: center; z-index: 2; }
 .uni-flip-btn {
-  margin-top: -19px; width: 38px; height: 38px; min-height: 38px; border-radius: 50%;
-  font-size: 18px; background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow-1);
+  margin-top: -18px; width: 36px; height: 36px; min-height: 36px; border-radius: 50%;
+  font-size: 16px; background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow-1);
 }
 .uni-flip-btn:hover { border-color: var(--accent); color: var(--accent); }
 /* Quote details under the big receive amount (transparent inside the panel). */
-.uni-panel .quote-box { background: transparent; border: none; padding: 0; margin: 8px 0 0; font-size: 13px; }
+.uni-panel .quote-box { background: transparent; border: none; padding: 0; margin: 8px 0 0; font-size: 12px; }
 /* Big full-width action button. */
-.uni-action { width: 100%; justify-content: center; padding: 14px; font-size: 16px; font-weight: 700; border-radius: 14px; margin-top: 12px; }
+.uni-action { width: 100%; justify-content: center; padding: 12px; font-size: 14px; font-weight: 700; border-radius: 14px; margin-top: 12px; }
 .missions-table td .btn + .btn { margin-left: 6px; }
 
 @media (max-width: 640px) {
