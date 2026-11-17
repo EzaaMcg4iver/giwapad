@@ -253,6 +253,7 @@ h4 { margin: 4px 0 8px; font-size: var(--text-base); font-weight: 600; line-heig
   transition: background-color 0.15s;
 }
 .wallet-menu-item:hover { background: var(--panel2); }
+a.wallet-menu-item { text-decoration: none; }
 .wallet-menu-item:focus-visible { box-shadow: var(--focus-ring); }
 /* Menu items can carry an icon (mobile nav) — constrain it like the tab icons;
    an unconstrained inline SVG would blow up to its 300px default width. */
@@ -467,7 +468,6 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
   font-family: ui-monospace, monospace; font-size: var(--text-xs); color: var(--muted);
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 2px 7px; flex: none;
 }
-#faucet-btn { text-decoration: none; flex: none; }
 .recent-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 12px 4px 0; font-size: var(--text-sm); }
 .recent-chip { min-height: 32px; padding: 4px 12px; font-size: var(--text-sm); }
 
@@ -653,15 +653,15 @@ body.bg-blobs #bg-blobs { display: block; }
 }
 
 /* Tablet and below: the header is two clean rows — brand + theme + Connect +
-   hamburger on top, full-width search below. Discover / Create Launch /
-   Faucet live in the hamburger dropdown, so nothing wraps. No horizontal
+   hamburger on top, full-width search below. Discover / Create Launch
+   live in the hamburger dropdown, so nothing wraps. No horizontal
    overflow at any width. */
 @media (max-width: 900px) {
   .topbar { flex-wrap: wrap; padding: 10px 12px; gap: 10px; }
   #theme-toggle { margin-left: auto; }
   .wallet { margin-left: 0; }
   .header-search { order: 3; flex: 1 1 100%; max-width: none; }
-  .tabs, #faucet-btn { display: none; }
+  .tabs { display: none; }
   .btn.nav-toggle { display: inline-flex; }
   .wallet-label-full { display: none; }
   .wallet-label-short { display: inline; }

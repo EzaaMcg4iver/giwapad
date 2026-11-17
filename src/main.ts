@@ -451,7 +451,7 @@ function renderWallet(): void {
     return;
   }
   // Connected: one button with the short address only. Clicking it opens a
-  // dropdown with Profile and Disconnect — no wallet-brand or chain label.
+  // dropdown with Profile, Faucet and Disconnect — no wallet-brand or chain label.
   const wrap = el("div", "wallet-menu-wrap");
   const b = el("button", "btn primary wallet-btn", shortAddr(state.account)) as HTMLButtonElement;
   b.setAttribute("aria-haspopup", "menu");
@@ -467,6 +467,13 @@ function renderWallet(): void {
     showView("profile");
     void renderProfile();
   };
+  const faucetItem = el("a", "wallet-menu-item", "Faucet") as HTMLAnchorElement;
+  faucetItem.setAttribute("role", "menuitem");
+  faucetItem.href = FAUCET_URL;
+  faucetItem.target = "_blank";
+  faucetItem.rel = "noopener";
+  faucetItem.title = "Get free GIWA Sepolia test ETH from the Lambda256 faucet";
+  faucetItem.onclick = () => { closeWalletMenu(); };
   const dcItem = el("button", "wallet-menu-item danger", "Disconnect wallet") as HTMLButtonElement;
   dcItem.setAttribute("role", "menuitem");
   dcItem.onclick = () => {
@@ -474,6 +481,7 @@ function renderWallet(): void {
     disconnectWallet();
   };
   menu.appendChild(profileItem);
+  menu.appendChild(faucetItem);
   menu.appendChild(dcItem);
   b.onclick = () => {
     if (menu.classList.contains("hidden")) {
@@ -4083,7 +4091,7 @@ async function boot(): Promise<void> {
   $("#tab-create").onclick = () => { try { history.replaceState(null, "", "#create"); } catch { /* non-fatal */ } showView("create"); void loadConfigsForForm(); };
   $("#tab-swap").onclick = () => { try { history.replaceState(null, "", "#swap"); } catch { /* non-fatal */ } showView("swap"); renderSwap(); ensureBackgroundStarted(); };
   // Mobile hamburger nav: the same Discover / Create Launch actions as the
-  // desktop tabs (which are hidden on mobile), plus the Faucet link. An item
+  // desktop tabs (which are hidden on mobile). An item
   // tap navigates and closes the menu.
   const navToggle = $("#nav-toggle") as HTMLButtonElement;
   navToggle.onclick = () => {
@@ -4094,7 +4102,6 @@ async function boot(): Promise<void> {
   $("#mnav-discover").onclick = () => { closeMobileNav(); $("#tab-discover").click(); };
   $("#mnav-create").onclick = () => { closeMobileNav(); $("#tab-create").click(); };
   $("#mnav-swap").onclick = () => { closeMobileNav(); $("#tab-swap").click(); };
-  $("#mnav-faucet").onclick = () => closeMobileNav();
   // Mobile nav: close on outside click.
   document.addEventListener("click", (e) => {
     const nav = document.querySelector("#mobile-nav");
