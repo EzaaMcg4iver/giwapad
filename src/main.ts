@@ -4054,7 +4054,7 @@ async function boot(): Promise<void> {
   // intercepts clicks.
   const blobs = document.createElement("div");
   blobs.id = "bg-blobs";
-  for (const c of ["blob-green", "blob-purple", "blob-blue", "blob-rose"]) {
+  for (const c of ["blob-violet", "blob-purple", "blob-blue", "blob-rose"]) {
     blobs.appendChild(el("div", `blob ${c}`));
   }
   document.body.prepend(blobs);
