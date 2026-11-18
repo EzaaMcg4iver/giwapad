@@ -50,8 +50,11 @@ import {
   classifyAmmoraV4ExactInputFill,
   scanAmmoraLogs,
   DammV2Client,
+  dammV2FactoryProfiles,
   buildV3NativePoolExactInput,
+  buildV3NativePoolPartialExactInput,
   minOutFromSlippage,
+  type DammV2FactoryProfile,
   AMMORA_FEE_POLICY_VERSION,
   ammoraLaunchFactoryV4Abi,
   ammoraLaunchPoolV4Abi,
@@ -1086,6 +1089,54 @@ export async function waitForSwapReceipt(
 // Post-graduation pool (ARL / DammV2 concentrated pool)
 // ---------------------------------------------------------------------------
 
+/**
+ * The auto-route deployment's own concentrated factory
+ * (0x9eBD78f3839996014238728b4c9C2f2A4e6759Cb) is missing from the SDK's
+ * built-in `dammV2FactoryProfiles` allow-list (0.3.9 and 0.3.10 both list
+ * only the newer v4 factory 0x038170a4… as "current" plus older v3
+ * factories). Every pool graduated through this deployment's factory —
+ * e.g. $CFUN's pool 0x502325CD9264DBe32213148885e824bF89F8dd30 — therefore
+ * fails `quoteExactInput` with "uses unsupported concentrated factory …
+ * on chain 91342" (shown truncated to "…on chain 91" by the 140-char
+ * error formatter), even though the factory IS the deployment catalog's
+ * own concentrated factory and `pool.factory()` / `isPool()` confirm the
+ * pool belongs to it.
+ *
+ * The SDK lets callers extend the allow-list via the DammV2Client
+ * `factoryProfiles` option, so we pass the built-in profiles PLUS this
+ * one extra entry. Every pinned value below was read live from the
+ * chain (factory/implementation runtime code hashes via keccak256 of
+ * `eth_getCode`, implementation via `factory.poolImplementation()`), so
+ * the SDK's provenance checks — bytecode hash match, `isPool`, and the
+ * pool being an EIP-1167 clone of the implementation — still run in
+ * full. `creatorFeeSource: "factory"` was verified too:
+ * `factory.poolCreatorFeeShareBps(pool)` returns 0, while the pool has
+ * no `creatorFeeShareBps()` at all (it reverts). `lifecycle: "legacy"`
+ * is honest — this generation is superseded by the v4 factory — and it
+ * also skips the SDK's active-factory sync check.
+ */
+export const LEGACY_CONCENTRATED_FACTORY_PROFILE: DammV2FactoryProfile = {
+  chainId: 91342,
+  factory: "0x9eBD78f3839996014238728b4c9C2f2A4e6759Cb",
+  factoryRuntimeCodeHash:
+    "0x5ec422e766da1fa07cc2933f3999a3c8b36e76bdca5a4824f97b9b58c7ae7334",
+  implementation: "0x16aC2947598408d51999346c4BCFAB5f9c5c0c65",
+  implementationRuntimeCodeHash:
+    "0x65ee94939140483e0435412378e8530014202c7198470828531fc00c4e9f3352",
+  kind: "concentrated",
+  lifecycle: "legacy",
+  revision: "concentrated-autoroute-factory-creator-fee",
+  sourceCommit: "258e87b608b8f998e550142531d108e21c7282f6",
+  creatorFeeSource: "factory",
+  executionEnabled: true,
+};
+
+/** Built-in SDK profiles plus the legacy auto-route factory above. */
+export const POOL_FACTORY_PROFILES: readonly DammV2FactoryProfile[] = [
+  ...dammV2FactoryProfiles,
+  LEGACY_CONCENTRATED_FACTORY_PROFILE,
+];
+
 export function poolClient(pool: Address): DammV2Client {
   return new DammV2Client(
     getPublicClient(),
@@ -1093,6 +1144,7 @@ export function poolClient(pool: Address): DammV2Client {
     "concentrated",
     CONCENTRATED_FACTORY,
     CONCENTRATED_PM,
+    { factoryProfiles: POOL_FACTORY_PROFILES },
   );
 }
 
@@ -1126,6 +1178,24 @@ export async function quotePool(
   return { amountOut: q.amountOut };
 }
 
+/**
+ * Partial-fill quote for a graduated pool: how much of `maximumAmountIn`
+ * the pool can actually absorb, what it pays, and what is left unfilled.
+ * The pool's own `quoteExactIn` reverts with PriceRangeViolation() when
+ * the full amount exceeds what the pool can absorb (tiny fresh pools
+ * like $CFUN's hold ~0.0002 WETH), so the UI falls back to this instead
+ * of failing the quote outright. Numbers come from the pool contract.
+ */
+export async function quotePoolPartial(
+  pool: Address,
+  tokenIn: Address,
+  maximumAmountIn: bigint,
+): Promise<{ amountIn: bigint; amountOut: bigint; amountLeft: bigint; fee: bigint }> {
+  const sdk = poolClient(pool);
+  const q = await sdk.quotePartialExactInput(tokenIn, maximumAmountIn);
+  return { amountIn: q.amountIn, amountOut: q.amountOut, amountLeft: q.amountLeft, fee: q.fee };
+}
+
 export async function planPoolSwap(
   pool: Address,
   tokenIn: Address,
@@ -1154,6 +1224,35 @@ export async function planPoolSwap(
   };
 }
 
+/** Partial-fill sell plan: swaps what the pool can absorb (`swapExactInPartial`), the rest stays in the wallet. */
+export async function planPoolSwapPartial(
+  pool: Address,
+  tokenIn: Address,
+  maximumAmountIn: bigint,
+  slippageBps: number,
+  recipient: Address,
+): Promise<SwapPlan> {
+  const sdk = poolClient(pool);
+  const plan = await sdk.planPartialExactInput({
+    tokenIn,
+    maximumAmountIn,
+    slippageBps,
+    recipient,
+    deadline: BigInt(Math.floor(Date.now() / 1000) + 1200),
+  });
+  return {
+    quote: {
+      amountOut: plan.quote.amountOut,
+      fee: plan.quote.fee,
+      amountLeft: plan.quote.amountLeft,
+      minimumAmountOut: plan.quote.minimumAmountOut,
+      fillKind: "partial",
+    },
+    transaction: plan.transaction,
+    approvals: plan.approvalRequirements,
+  };
+}
+
 /** Buy a graduated pool's token with native ETH (one tx, no approval). */
 export function buildNativePoolBuy(
   pool: Address,
@@ -1167,6 +1266,31 @@ export function buildNativePoolBuy(
     ...buildV3NativePoolExactInput(
       pool,
       ethAmountIn,
+      minimumAmountOut,
+      recipient,
+      BigInt(Math.floor(Date.now() / 1000) + 600),
+      zero,
+    ),
+  };
+}
+
+/**
+ * Partial-fill buy with native ETH: the router swaps what the pool can
+ * absorb (up to `maximumEthIn`) and refunds the unspent ETH. Used when
+ * the full buy exceeds the pool (PriceRangeViolation on the exact quote).
+ */
+export function buildNativePoolBuyPartial(
+  pool: Address,
+  maximumEthIn: bigint,
+  minimumAmountOut: bigint,
+  recipient: Address,
+): AmmoraTransaction {
+  const zero = "0x0000000000000000000000000000000000000000" as Address;
+  return {
+    to: NATIVE_ROUTER,
+    ...buildV3NativePoolPartialExactInput(
+      pool,
+      maximumEthIn,
       minimumAmountOut,
       recipient,
       BigInt(Math.floor(Date.now() / 1000) + 600),

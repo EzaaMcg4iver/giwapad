@@ -49,8 +49,11 @@ import {
   waitForSwapReceipt,
   getPoolState,
   quotePool,
+  quotePoolPartial,
   planPoolSwap,
+  planPoolSwapPartial,
   buildNativePoolBuy,
+  buildNativePoolBuyPartial,
   minOut,
   buildWrapTx,
   buildUnwrapTx,
@@ -64,7 +67,7 @@ import {
   type TokenDayStats,
   type TransferEvent,
 } from "./ammora";
-import { friendlyErrorMessage } from "./errors";
+import { friendlyErrorMessage, errorText } from "./errors";
 import { formatDisplayNumber } from "./format";
 import { ICON_COPY, ICON_EXTERNAL_LINK, ICON_SEARCH } from "./icons";
 import { initTheme, toggleTheme } from "./theme";
@@ -2185,8 +2188,32 @@ function poolSwapForm(l: EnrichedLaunch, pool: Address, opts: SwapFormOpts): Swa
   let lastAmountIn = 0n;
   let lastMinOut = 0n;
   let lastPlan: Awaited<ReturnType<typeof planPoolSwap>> | null = null;
+  let lastPartial: { consumed: bigint; left: bigint } | null = null;
   let lastOutMeta: { symbol: string; decimals: number } | null = null;
   let hasQuote = false;
+
+  /**
+   * Pool quote with a partial-fill fallback. The exact-input quote reverts
+   * with PriceRangeViolation() when the amount exceeds what the pool can
+   * absorb (fresh graduated pools hold very little — $CFUN's pool holds
+   * ~0.0002 WETH, so a 500,000 CFUN sell cannot fill in full). In that
+   * case, and only in that case, fall back to the pool's own partial
+   * quote: what it can absorb, what it pays, and what stays unfilled.
+   * Any other failure (RPC, rate limit, …) is rethrown unchanged.
+   */
+  async function quotePoolOrPartial(
+    tokenIn: Address,
+    amountIn: bigint,
+  ): Promise<{ amountOut: bigint; partial: { consumed: bigint; left: bigint } | null }> {
+    try {
+      const q = await quotePool(pool, tokenIn, amountIn);
+      return { amountOut: q.amountOut, partial: null };
+    } catch (err) {
+      if (!errorText(err).includes("PriceRangeViolation")) throw err;
+      const p = await quotePoolPartial(pool, tokenIn, amountIn);
+      return { amountOut: p.amountOut, partial: { consumed: p.amountIn, left: p.amountLeft } };
+    }
+  }
 
   // Uniswap layout (Swap page only): the shell owns the panels; the pills
   // move between them when the direction flips. Stacked layout (detail
@@ -2278,6 +2305,7 @@ function poolSwapForm(l: EnrichedLaunch, pool: Address, opts: SwapFormOpts): Swa
     sellBtn.classList.toggle("active", dir === "sell");
     amountLabel.textContent = payLabel(dir);
     lastPlan = null;
+    lastPartial = null;
     execBtn.textContent = idleLabel(dir);
     void refreshPoolBalRow();
     void updateQuote();
@@ -2293,6 +2321,7 @@ function poolSwapForm(l: EnrichedLaunch, pool: Address, opts: SwapFormOpts): Swa
 
   async function updateQuote(): Promise<void> {
     lastPlan = null;
+    lastPartial = null;
     hasQuote = false;
     execBtn.textContent = idleLabel(direction);
     const raw = amountInput.value.trim();
@@ -2316,7 +2345,8 @@ function poolSwapForm(l: EnrichedLaunch, pool: Address, opts: SwapFormOpts): Swa
         const outToken = baseIsWeth ? st.quoteToken : st.baseToken;
         const outMeta = await getTokenMeta(outToken);
         lastOutMeta = outMeta;
-        const q = await quotePool(pool, WETH, amountIn);
+        const q = await quotePoolOrPartial(WETH, amountIn);
+        lastPartial = q.partial;
         lastMinOut = minOut(q.amountOut, state.slippageBps);
         if (opts.quoteStyle === "swap") {
           // Per-token price: scale both raw amounts to whole tokens first.
@@ -2331,17 +2361,20 @@ function poolSwapForm(l: EnrichedLaunch, pool: Address, opts: SwapFormOpts): Swa
           }
           quoteBox.appendChild(el("div", "", `Minimum received (${(state.slippageBps / 100).toFixed(1)}% slippage): ${fmtAmount(lastMinOut, outMeta.decimals)} ${outMeta.symbol}`));
           quoteBox.appendChild(el("div", "", `Price: 1 ETH ≈ ${formatDisplayNumber(unit)} ${outMeta.symbol}`));
+          if (lastPartial) quoteBox.appendChild(el("div", "", `Partial fill: pool takes ${fmtAmount(lastPartial.consumed, 18)} of ${fmtAmount(amountIn, 18)} ETH — ${fmtAmount(lastPartial.left, 18)} ETH refunded`));
         } else {
           quoteBox.innerHTML = "";
           quoteBox.appendChild(el("div", "", `Expected out: ${fmtAmount(q.amountOut, outMeta.decimals)} ${outMeta.symbol}`));
           quoteBox.appendChild(el("div", "", `Minimum out (${(state.slippageBps / 100).toFixed(1)}% slippage): ${fmtAmount(lastMinOut, outMeta.decimals)} ${outMeta.symbol}`));
+          if (lastPartial) quoteBox.appendChild(el("div", "", `Fill: partial · unfilled ${fmtAmount(lastPartial.left, 18)} ETH (refunded)`));
         }
         hasQuote = true;
         execBtn.textContent = "Preview & execute";
       } else {
         const amountIn = parseUnits(raw, l.meta!.decimals);
         lastAmountIn = amountIn;
-        const q = await quotePool(pool, l.token, amountIn);
+        const q = await quotePoolOrPartial(l.token, amountIn);
+        lastPartial = q.partial;
         lastMinOut = minOut(q.amountOut, state.slippageBps);
         lastOutMeta = { symbol: "WETH", decimals: 18 };
         if (opts.quoteStyle === "swap") {
@@ -2357,10 +2390,12 @@ function poolSwapForm(l: EnrichedLaunch, pool: Address, opts: SwapFormOpts): Swa
           }
           quoteBox.appendChild(el("div", "", `Minimum received (${(state.slippageBps / 100).toFixed(1)}% slippage): ${fmtAmount(lastMinOut, 18)} WETH`));
           quoteBox.appendChild(el("div", "", `Price: 1 ${baseSymbol} ≈ ${formatDisplayNumber(unit)} WETH`));
+          if (lastPartial) quoteBox.appendChild(el("div", "", `Partial fill: pool takes ${fmtAmount(lastPartial.consumed, l.meta!.decimals)} of ${fmtAmount(amountIn, l.meta!.decimals)} ${baseSymbol} — ${fmtAmount(lastPartial.left, l.meta!.decimals)} ${baseSymbol} stays in your wallet`));
         } else {
           quoteBox.innerHTML = "";
           quoteBox.appendChild(el("div", "", `Expected out: ${fmtAmount(q.amountOut, 18)} WETH`));
           quoteBox.appendChild(el("div", "", `Minimum out (${(state.slippageBps / 100).toFixed(1)}% slippage): ${fmtAmount(lastMinOut, 18)} WETH`));
+          if (lastPartial) quoteBox.appendChild(el("div", "", `Fill: partial · unfilled ${fmtAmount(lastPartial.left, l.meta!.decimals)} ${baseSymbol}`));
         }
         hasQuote = true;
         execBtn.textContent = "Preview & execute";
@@ -2392,13 +2427,16 @@ function poolSwapForm(l: EnrichedLaunch, pool: Address, opts: SwapFormOpts): Swa
           return;
         }
         const outMeta = lastOutMeta ?? { symbol: baseSymbol, decimals: l.meta!.decimals };
-        const tx = buildNativePoolBuy(pool, lastAmountIn, lastMinOut, state.account);
+        const tx = lastPartial
+          ? buildNativePoolBuyPartial(pool, lastAmountIn, lastMinOut, state.account)
+          : buildNativePoolBuy(pool, lastAmountIn, lastMinOut, state.account);
         const m = openReviewModal({
           signLabel: "Sign & execute in wallet",
           onClose: () => resetExec(),
         });
-        m.body.appendChild(reviewRow("You pay", `${fmtAmount(lastAmountIn, 18)} ETH`));
+        m.body.appendChild(reviewRow(lastPartial ? "You pay (max)" : "You pay", `${fmtAmount(lastAmountIn, 18)} ETH`));
         m.body.appendChild(reviewRow("You receive (min)", `${fmtAmount(lastMinOut, outMeta.decimals)} ${outMeta.symbol}`));
+        if (lastPartial) m.body.appendChild(reviewRow("Unspent (refunded)", `${fmtAmount(lastPartial.left, 18)} ETH`));
         m.body.appendChild(reviewRow("To (pool)", reviewAddrValue(pool)));
         resetExec();
         m.signBtn.onclick = async () => {
@@ -2427,14 +2465,17 @@ function poolSwapForm(l: EnrichedLaunch, pool: Address, opts: SwapFormOpts): Swa
         resetExec();
         return;
       }
-      const plan = await planPoolSwap(pool, l.token, lastAmountIn, state.slippageBps, state.account);
+      const plan = lastPartial
+        ? await planPoolSwapPartial(pool, l.token, lastAmountIn, state.slippageBps, state.account)
+        : await planPoolSwap(pool, l.token, lastAmountIn, state.slippageBps, state.account);
       lastPlan = plan;
       const m = openReviewModal({
         signLabel: "Sign & execute in wallet",
         onClose: () => { lastPlan = null; resetExec(); },
       });
-      m.body.appendChild(reviewRow("You pay", `${fmtAmount(lastAmountIn, l.meta!.decimals)} ${l.meta!.symbol}`));
+      m.body.appendChild(reviewRow(lastPartial ? "You pay (max)" : "You pay", `${fmtAmount(lastAmountIn, l.meta!.decimals)} ${l.meta!.symbol}`));
       m.body.appendChild(reviewRow("You receive (min)", `${fmtAmount(plan.quote.minimumAmountOut, 18)} WETH`));
+      if (lastPartial) m.body.appendChild(reviewRow("Unfilled (stays in wallet)", `${fmtAmount(lastPartial.left, l.meta!.decimals)} ${l.meta!.symbol}`));
       m.body.appendChild(reviewRow("To (pool)", reviewAddrValue(pool)));
       if (plan.approvals.length > 0) {
         m.body.appendChild(reviewRow("Approvals needed", plan.approvals.map((a) => `${shortAddr(a.token)} → ${shortAddr(a.spender)}`).join(", ")));
