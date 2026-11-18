@@ -713,7 +713,7 @@ function renderTopCards(): void {
     .map((l) => ({ l, mcap: launchMcap(l) }))
     .filter((x): x is { l: EnrichedLaunch; mcap: number } => x.mcap !== null)
     .sort((a, b) => b.mcap - a.mcap)
-    .slice(0, 4);
+    .slice(0, 6);
   if (ranked.length === 0) return;
   box.appendChild(el("h2", "", "Top by market cap"));
   const grid = el("div", "top-grid");
