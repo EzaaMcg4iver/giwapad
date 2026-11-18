@@ -37,6 +37,7 @@
     <button id="tab-discover" class="tab active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Discover</span></button>
     <button id="tab-swap" class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M7 20l-3-3M7 20l3-3M17 20V4M17 4l-3 3M17 4l3 3"/></svg><span>Swap</span></button>
     <button id="tab-create" class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg><span>Create Launch</span></button>
+    <button id="tab-docs" class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg><span>Docs</span></button>
   </nav>
   <!-- Temporarily hidden 2026-11-17 (user order): restore by removing "hidden". -->
   <div class="header-search hidden">
@@ -53,6 +54,7 @@
     <button id="mnav-discover" class="wallet-menu-item" role="menuitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Discover</span></button>
     <button id="mnav-swap" class="wallet-menu-item" role="menuitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M7 20l-3-3M7 20l3-3M17 20V4M17 4l-3 3M17 4l3 3"/></svg><span>Swap</span></button>
     <button id="mnav-create" class="wallet-menu-item" role="menuitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg><span>Create Launch</span></button>
+    <button id="mnav-docs" class="wallet-menu-item" role="menuitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg><span>Docs</span></button>
   </div>
 </header>
 
@@ -198,10 +200,89 @@
   <section id="view-detail" class="hidden"></section>
 
   <section id="view-profile" class="hidden"></section>
+
+  <section id="view-docs" class="hidden">
+    <article class="docs">
+      <header class="docs-head">
+        <h1>Docs</h1>
+        <p class="muted docs-lede">Everything about ConkFun: what it is, how to launch and trade, and how the bonding curve works. ConkFun runs on the GIWA Sepolia testnet — test ETH only, nothing here is worth real money.</p>
+      </header>
+      <nav class="docs-toc panel" aria-label="On this page">
+        <strong>On this page</strong>
+        <ol>
+          <li><a href="#docs-what">What is ConkFun?</a></li>
+          <li><a href="#docs-wallet">Wallet setup + faucet</a></li>
+          <li><a href="#docs-launch">How to launch</a></li>
+          <li><a href="#docs-trade">How to trade</a></li>
+          <li><a href="#docs-swap">Swap + wrap</a></li>
+          <li><a href="#docs-curve">Curve mechanics + graduation</a></li>
+          <li><a href="#docs-testnet">Testnet disclaimer</a></li>
+          <li><a href="#docs-links">Links</a></li>
+        </ol>
+      </nav>
+
+      <h2 id="docs-what">What is ConkFun?</h2>
+      <p>ConkFun is a token launchpad on GIWA Sepolia (chain 91342), built with <code>@ammora-protocol/sdk 0.3.9</code>. Anyone can launch a token, trade tokens on their bonding curves, and swap between ETH and WETH — all on testnet. Tokens and test ETH here have no real value.</p>
+      <p>Discover lists every launch with its live price, market cap, and 24h volume, all read from the chain. Open a token to see its price chart, stats, and Trade panel.</p>
+
+      <h2 id="docs-wallet">Wallet setup + faucet</h2>
+      <ol>
+        <li><strong>Connect a wallet.</strong> Click “Connect wallet” in the navbar and pick your wallet (Rabby or MetaMask). ConkFun asks your wallet to switch to GIWA Sepolia (chain 91342) and adds the chain automatically if your wallet doesn’t know it yet.</li>
+        <li><strong>Get free test ETH.</strong> GIWA Sepolia ETH is free from the Lambda256 faucet: <a class="docs-faucet-link" target="_blank" rel="noopener">Get free test ETH →</a>. Faucet ETH is testnet-only and worthless by design.</li>
+        <li><strong>Hold WETH to buy.</strong> Buys on a bonding curve are paid in WETH. If you only hold ETH, wrap it 1:1 on the Swap page (see <a href="#docs-swap">Swap + wrap</a>).</li>
+      </ol>
+
+      <h2 id="docs-launch">How to launch</h2>
+      <ol>
+        <li><strong>Open Create Launch.</strong> Connect your wallet first — the launch transaction is signed from it.</li>
+        <li><strong>Pick a launch config.</strong> The dropdown lists the enabled on-chain configs as “Config #N — segments, token decimals, migration threshold in WETH”. The info boxes show the token supply, the creation fee, and the “Full curve” migration threshold for the selected config.</li>
+        <li><strong>Name your token.</strong> A name (up to 64 bytes), a ticker (up to 10 bytes), an optional description (up to 200 characters), and an image. A picked image is uploaded automatically (catbox.moe, fallback uguu.se) so it can go into the token metadata — or paste an image link instead. The metadata URI is built for you from this form, or paste your own (max 2048 bytes on-chain).</li>
+        <li><strong>Review and sign.</strong> “Launch mission” opens a review modal showing exactly what will be sent. Check it, then “Sign &amp; create launch” in your wallet.</li>
+        <li><strong>After the launch.</strong> Your token appears on Discover. The launch itself does not include an initial buy — buy separately from the token’s page if you want a position. The creation fee and total to send are shown in the Summary card before you sign.</li>
+      </ol>
+
+      <h2 id="docs-trade">How to trade</h2>
+      <p>Open a token from Discover (or from your Profile) to see its detail page: a live price chart (price/mcap toggle, timeframes 1s–24h, candles/line, log scale), stats, and the Trade panel.</p>
+      <ol>
+        <li><strong>Pick a direction.</strong> Buy or Sell in the Trade panel and enter an amount in WETH.</li>
+        <li><strong>Set slippage and get a quote.</strong> The quote is live, from the chain.</li>
+        <li><strong>Review, then sign.</strong> Every trade goes through the shared review modal first — it shows the exact transaction before anything is signed.</li>
+      </ol>
+      <p>While a token is Active it trades on its bonding curve. Once it graduates, trading moves to the canonical pool — see <a href="#docs-curve">Curve mechanics + graduation</a>.</p>
+
+      <h2 id="docs-swap">Swap + wrap</h2>
+      <p>The Swap page (<a href="#swap">Swap</a>) trades any launch token: pick Buy or Sell, flip the pair, set slippage with the gear icon, get a live quote, then review and sign.</p>
+      <p><strong>Wrap / unwrap.</strong> ETH ↔ WETH is exactly 1:1 — no slippage, no fee besides gas. Pick ETH or WETH at the top of the Swap token menu.</p>
+
+      <h2 id="docs-curve">Curve mechanics + graduation</h2>
+      <p>Every launch lives on a bonding curve. Buys push the price up, sells push it down. The curve’s progress (“Fuel”) shows how far it is toward graduation.</p>
+      <p><strong>Lifecycle:</strong> Created → Active → Ready to graduate → Graduated.</p>
+      <ul>
+        <li><strong>Created</strong> — the launch exists, but trading is not available yet.</li>
+        <li><strong>Active</strong> — the token trades on its bonding curve.</li>
+        <li><strong>Ready to graduate</strong> — the curve reached its migration threshold (set by the launch config, shown on Create as “Full curve”).</li>
+        <li><strong>Graduated</strong> — liquidity migrated to a pool, and trading continues on that canonical pool. The token’s detail page links the pool address.</li>
+      </ul>
+      <p>In this app, only the token’s creator sees the “Graduate (migrate to pool)” button. The Ammora protocol itself is permissionless: anyone can migrate a ready curve, from any interface or directly on-chain.</p>
+
+      <h2 id="docs-testnet">Testnet disclaimer</h2>
+      <div class="warn">ConkFun runs on GIWA Sepolia, a testnet. Test ETH and all tokens here are worthless — never pay real money for them, and never send real funds to a testnet address. ConkFun never asks for your seed phrase or private key — never enter one anywhere.</div>
+
+      <h2 id="docs-links">Links</h2>
+      <ul class="docs-links">
+        <li><a href="https://giwapad.vercel.app/" target="_blank" rel="noopener">Live site</a> <span class="docs-link-desc">— ConkFun on GIWA Sepolia</span></li>
+        <li><a href="https://github.com/EzaaMcg4iver/giwapad" target="_blank" rel="noopener">Source code</a> <span class="docs-link-desc">— github.com/EzaaMcg4iver/giwapad</span></li>
+        <li><a href="https://ammora.org" target="_blank" rel="noopener">Ammora</a> <span class="docs-link-desc">— the protocol ConkFun is built on</span></li>
+        <li><a href="https://sepolia-explorer.giwa.io" target="_blank" rel="noopener">GIWA Sepolia explorer</a> <span class="docs-link-desc">— sepolia-explorer.giwa.io</span></li>
+        <li><a class="docs-faucet-link" target="_blank" rel="noopener">Test ETH faucet</a> <span class="docs-link-desc">— free GIWA Sepolia ETH (Lambda256)</span></li>
+      </ul>
+    </article>
+  </section>
 </main>
 
 <footer class="footer muted">
   <div id="chain-status" class="chain-status">Connecting to GIWA Sepolia…</div>
+  <div class="footer-links"><a href="#docs">Docs</a> · <a href="https://giwapad.vercel.app/" target="_blank" rel="noopener">Live site</a> · <a href="https://github.com/EzaaMcg4iver/giwapad" target="_blank" rel="noopener">GitHub</a> · <a href="https://ammora.org" target="_blank" rel="noopener">Ammora</a></div>
   Built with <code>@ammora-protocol/sdk 0.3.9</code> on GIWA Sepolia (chain 91342) · Testnet only — no real funds ·
   All numbers come from live chain reads · Never enter a seed phrase or private key anywhere.
 </footer>

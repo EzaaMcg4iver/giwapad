@@ -235,7 +235,7 @@ const state = {
   /** Swap page in wrap mode: ETH <-> WETH (1:1, no launch). Null = launch pair. */
   swapWrap: null as "wrap" | "unwrap" | null,
   slippageBps: 100,
-  view: "discover" as "discover" | "create" | "detail" | "profile" | "swap",
+  view: "discover" as "discover" | "create" | "detail" | "profile" | "swap" | "docs",
   // Cached non-zero token holdings, keyed by token address (lowercase).
   holdings: new Map<string, { balance: bigint; decimals: number; symbol: string }>(),
   holdingsFor: null as Address | null,
@@ -4083,28 +4083,40 @@ async function handleCreate(): Promise<void> {
 // Theme (light/dark) + deep links
 // ---------------------------------------------------------------------------
 
-function showView(name: "discover" | "create" | "detail" | "profile" | "swap"): void {
+function showView(name: "discover" | "create" | "detail" | "profile" | "swap" | "docs"): void {
   // A view change dismisses the review modal (e.g. "Open launch" after a
   // successful create) — its result lives in the new view, not behind it.
   closeReviewModal();
   state.view = name;
-  for (const v of ["discover", "create", "detail", "profile", "swap"] as const) {
+  for (const v of ["discover", "create", "detail", "profile", "swap", "docs"] as const) {
     $("#view-" + v).classList.toggle("hidden", v !== name);
   }
-  // Discover, Create Launch, and Swap live in the nav; Profile is reached
-  // from the wallet dropdown, and Detail never has an active tab. The mobile
-  // hamburger items mirror the desktop tabs' active state.
-  for (const t of ["discover", "create", "swap"] as const) {
+  // Discover, Create Launch, Swap, and Docs live in the nav; Profile is
+  // reached from the wallet dropdown, and Detail never has an active tab.
+  // The mobile hamburger items mirror the desktop tabs' active state.
+  for (const t of ["discover", "create", "swap", "docs"] as const) {
     $(`#tab-${t}`).classList.toggle("active", t === name);
     $(`#mnav-${t}`).classList.toggle("active", t === name);
   }
-  // "Recently viewed" is a discovery aid — it does not belong on Profile or Swap.
-  if (name === "profile" || name === "swap") {
+  // "Recently viewed" is a discovery aid — it does not belong on Profile,
+  // Swap, or the Docs article.
+  if (name === "profile" || name === "swap" || name === "docs") {
     $("#recent-row").classList.add("hidden");
   } else {
     renderRecent();
   }
   if (name === "create") refreshCreatePreview();
+}
+
+/**
+ * TOC anchor on the docs page (#docs-<section>): jump to it after the view
+ * is visible. The browser's native jump fires while the section is still
+ * hidden, so it never lands — this does the scroll explicitly.
+ */
+function scrollDocsAnchor(hash: string): void {
+  if (!hash.startsWith("docs-")) return;
+  const target = document.getElementById(hash);
+  if (target) target.scrollIntoView();
 }
 
 async function verifyChainStatus(): Promise<void> {
@@ -4177,6 +4189,10 @@ async function boot(): Promise<void> {
   faucetLink.textContent = "Get free test ETH →";
   banner.appendChild(faucetLink);
   document.body.insertBefore(banner, document.querySelector(".topbar"));
+  // Docs page faucet links reuse the same FAUCET_URL (never a second copy).
+  for (const a of document.querySelectorAll<HTMLAnchorElement>(".docs-faucet-link")) {
+    a.href = FAUCET_URL;
+  }
   renderWallet();
   showView("discover");
   initTheme();
@@ -4188,6 +4204,7 @@ async function boot(): Promise<void> {
   $("#tab-discover").onclick = () => { try { history.replaceState(null, "", "#discover"); } catch { /* non-fatal */ } showView("discover"); renderDiscover(); ensureBackgroundStarted(); };
   $("#tab-create").onclick = () => { try { history.replaceState(null, "", "#create"); } catch { /* non-fatal */ } showView("create"); void loadConfigsForForm(); };
   $("#tab-swap").onclick = () => { try { history.replaceState(null, "", "#swap"); } catch { /* non-fatal */ } showView("swap"); renderSwap(); ensureBackgroundStarted(); };
+  $("#tab-docs").onclick = () => { try { history.replaceState(null, "", "#docs"); } catch { /* non-fatal */ } showView("docs"); ensureBackgroundStarted(); };
   // Mobile hamburger nav: the same Discover / Create Launch actions as the
   // desktop tabs (which are hidden on mobile). An item
   // tap navigates and closes the menu.
@@ -4200,6 +4217,7 @@ async function boot(): Promise<void> {
   $("#mnav-discover").onclick = () => { closeMobileNav(); $("#tab-discover").click(); };
   $("#mnav-create").onclick = () => { closeMobileNav(); $("#tab-create").click(); };
   $("#mnav-swap").onclick = () => { closeMobileNav(); $("#tab-swap").click(); };
+  $("#mnav-docs").onclick = () => { closeMobileNav(); $("#tab-docs").click(); };
   // Mobile nav: close on outside click.
   document.addEventListener("click", (e) => {
     const nav = document.querySelector("#mobile-nav");
@@ -4358,13 +4376,15 @@ async function boot(): Promise<void> {
     const h = location.hash.replace(/^#\/?/, "");
     if (h.startsWith("detail/")) void openHashDetail();
     else if (h === "swap" || h.startsWith("swap/")) void openHashSwap();
+    else if (h === "docs" || h.startsWith("docs-")) { showView("docs"); ensureBackgroundStarted(); scrollDocsAnchor(h); }
   });
 
-  // Deep links: #discover (default), #create, #profile, #detail/<curve>.
+  // Deep links: #discover (default), #create, #profile, #detail/<curve>, #docs.
   // A leading "/" after "#" is tolerated ("#/detail/…" shared links).
   const hash = location.hash.replace(/^#\/?/, "");
   if (hash === "create") { showView("create"); void loadConfigsForForm(); ensureBackgroundStarted(); }
   else if (hash === "profile") { showView("profile"); void renderProfile(); ensureBackgroundStarted(); }
+  else if (hash === "docs" || hash.startsWith("docs-")) { showView("docs"); ensureBackgroundStarted(); scrollDocsAnchor(hash); }
   else if (hash === "swap" || hash.startsWith("swap/")) { await openHashSwap(); ensureBackgroundStarted(); }
   else if (hash.startsWith("detail/")) {
     // Deep link: open the detail FIRST. The heavy background jobs share
