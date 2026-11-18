@@ -50,6 +50,9 @@
   color-scheme: dark;
   --bg: #0d1117;
   --topbar-bg: rgba(13, 17, 23, 0.72);
+  --glass-bg: rgba(28, 35, 48, 0.55);
+  --glass-border: rgba(255, 255, 255, 0.09);
+  --glass-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   --panel: #161b22;
   --panel2: #1c2330;
   --border: #2d333b;
@@ -104,6 +107,9 @@
   color-scheme: light;
   --bg: #f4f4f7;
   --topbar-bg: rgba(244, 244, 247, 0.72);
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --glass-border: rgba(255, 255, 255, 0.65);
+  --glass-shadow: 0 8px 24px rgba(16, 24, 40, 0.12);
   --panel: #ffffff;
   --panel2: #ececf1;
   --border: #d8d8e0;
@@ -199,7 +205,13 @@ h4 { margin: 4px 0 8px; font-size: var(--text-base); font-weight: 600; line-heig
   display: inline-flex; align-items: center; justify-content: center;
 }
 .logo svg { width: 18px; height: 18px; display: block; }
-.brand-name { font-size: var(--text-2xl); font-weight: 800; letter-spacing: 0.3px; }
+.brand-name { font-size: var(--text-2xl); font-weight: 800; letter-spacing: 0.3px; display: inline-flex; align-items: center; gap: 6px; }
+/* Beta pill next to the wordmark — ConkFun is still in development. */
+.beta-pill {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase;
+  line-height: 1; padding: 3px 6px; border-radius: 999px;
+  color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent);
+}
 .tabs { display: flex; gap: 6px; margin-left: 4px; flex: none; }
 .tab {
   background: transparent; border: 1px solid transparent; color: var(--text);
@@ -508,6 +520,10 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 }
 .monogram-sm { font-size: 14px; }
 .monogram-lg { font-size: 24px; }
+/* ETH tile: the real Ethereum diamond on a white tile — the mark's
+   standard presentation, so it stays legible in both themes. */
+.token-tile.eth-tile { background: #fff; }
+.token-tile .eth-logo { width: 100%; height: 100%; display: block; }
 
 /* Segmented fuel bar (20 cells). */
 .fuel-seg { display: flex; gap: 2px; }
@@ -939,6 +955,18 @@ body.bg-blobs #bg-blobs { display: block; }
 .uni-panel .quote-box { background: transparent; border: none; padding: 0; margin: 8px 0 0; font-size: 12px; }
 /* Big full-width action button. */
 .uni-action { width: 100%; justify-content: center; padding: 12px; font-size: 14px; font-weight: 700; border-radius: 14px; margin-top: 12px; }
+/* Swap page glassmorphism — frosted shell panels + token menu over the
+   blob background. Scoped to #view-swap so no other page moves. The flip
+   button and the big action stay solid. */
+#view-swap .swap-card,
+#view-swap .uni-panel,
+#view-swap .swap-menu {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  backdrop-filter: blur(16px) saturate(1.4);
+  box-shadow: var(--glass-shadow);
+}
 .missions-table td .btn + .btn { margin-left: 6px; }
 
 @media (max-width: 640px) {

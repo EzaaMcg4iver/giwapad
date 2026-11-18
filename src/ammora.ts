@@ -269,7 +269,7 @@ export async function ensureGiwaChain(): Promise<void> {
   } catch (err) {
     // A failed chain read must not block the connect attempt; fall through
     // to the switch below. A rejection here is not a thing, so just continue.
-    if (providerErrorCode(err) === 4001) throw new Error("Pindah chain ditolak di dompet, coba lagi.");
+    if (providerErrorCode(err) === 4001) throw new Error("Chain switch rejected in wallet, try again.");
   }
   try {
     await eth.request({
@@ -278,7 +278,7 @@ export async function ensureGiwaChain(): Promise<void> {
     });
     return;
   } catch (err) {
-    if (providerErrorCode(err) === 4001) throw new Error("Pindah chain ditolak di dompet, coba lagi.");
+    if (providerErrorCode(err) === 4001) throw new Error("Chain switch rejected in wallet, try again.");
     if (!isUnknownChainError(err)) throw err;
     // Chain is unknown to the wallet: add it, then switch to it.
     try {
@@ -287,7 +287,7 @@ export async function ensureGiwaChain(): Promise<void> {
         params: [giwaSepoliaAddParams()],
       });
     } catch (addErr) {
-      if (providerErrorCode(addErr) === 4001) throw new Error("Pindah chain ditolak di dompet, coba lagi.");
+      if (providerErrorCode(addErr) === 4001) throw new Error("Chain switch rejected in wallet, try again.");
       throw addErr;
     }
     try {
@@ -296,7 +296,7 @@ export async function ensureGiwaChain(): Promise<void> {
         params: [{ chainId: chainIdHex }],
       });
     } catch (switchErr) {
-      if (providerErrorCode(switchErr) === 4001) throw new Error("Pindah chain ditolak di dompet, coba lagi.");
+      if (providerErrorCode(switchErr) === 4001) throw new Error("Chain switch rejected in wallet, try again.");
       throw switchErr;
     }
   }

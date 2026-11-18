@@ -87,29 +87,29 @@ export function isUnknownChainError(err: unknown): boolean {
 }
 
 /**
- * Short human message for an error, in Indonesian. Raw viem dumps (request
+ * Short human message for an error, in English. Raw viem dumps (request
  * bodies, docs links, JSON) and "[object Object]" are never shown.
  */
 export function friendlyErrorMessage(err: unknown): string {
-  if (isRateLimitError(err)) return "RPC sedang sibuk, coba lagi.";
+  if (isRateLimitError(err)) return "RPC is busy, try again.";
   const code = providerErrorCode(err);
-  if (code === 4001) return "Permintaan ditolak di dompet, coba lagi.";
-  if (code === -32002) return "Permintaan masih menunggu di dompet — cek dompetmu.";
-  if (code === 4902 || isUnknownChainError(err)) return "Dompet belum mengenal jaringan GIWA Sepolia.";
+  if (code === 4001) return "Request rejected in wallet, try again.";
+  if (code === -32002) return "Request still pending in wallet — check your wallet.";
+  if (code === 4902 || isUnknownChainError(err)) return "Wallet doesn't know the GIWA Sepolia network yet.";
   const raw = errorText(err);
   if (/no injected wallet|window\.ethereum/i.test(raw)) {
-    return "Dompet tidak ditemukan. Pasang ekstensi dompet, atau buka halaman ini di browser dompet.";
+    return "No wallet found. Install a wallet extension, or open this page in a wallet browser.";
   }
-  if (/timed out|timeout/i.test(raw)) return "RPC lambat, coba lagi.";
-  if (/wallet_switchEthereumChain|switch.*chain|pindah chain/i.test(raw)) {
-    return "Gagal pindah jaringan ke GIWA Sepolia, coba lagi.";
+  if (/timed out|timeout/i.test(raw)) return "RPC is slow, try again.";
+  if (/wallet_switchEthereumChain|switch.*chain/i.test(raw)) {
+    return "Failed to switch to GIWA Sepolia, try again.";
   }
-  if (raw.length === 0) return "Terjadi kesalahan, coba lagi.";
+  if (raw.length === 0) return "Something went wrong, try again.";
   const firstLine = raw.split("\n")[0];
   if (firstLine.length <= 140 && !/Request body|Docs:|Raw Call Arguments|Contract Call:|HTTP request failed/.test(firstLine)) {
     return firstLine;
   }
-  if (/HTTP request failed/.test(firstLine)) return "Gagal menghubungi RPC, coba lagi.";
+  if (/HTTP request failed/.test(firstLine)) return "Couldn't reach the RPC, try again.";
   const cut = firstLine.split("Request body:")[0].split("Docs:")[0].trim();
-  return (cut.length > 0 ? cut : "Terjadi kesalahan, coba lagi.").slice(0, 140);
+  return (cut.length > 0 ? cut : "Something went wrong, try again.").slice(0, 140);
 }

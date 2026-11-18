@@ -205,6 +205,23 @@ function tokenTile(l: EnrichedLaunch, size: "sm" | "lg" = "sm"): HTMLElement {
   return wrap;
 }
 
+/** Ethereum diamond mark (inline SVG — no external asset, no binary file).
+ * Standard four-facet diamond: upper facets lighter, lower facets darker,
+ * brand base #627EEA. Rendered on a white tile (see .eth-tile). */
+const ETH_DIAMOND_SVG =
+  `<svg class="eth-logo" viewBox="0 0 32 32" aria-hidden="true">` +
+  `<polygon points="16,3 25,14.5 16,20.5" fill="#8A9BE8"/>` +
+  `<polygon points="16,3 7,14.5 16,20.5" fill="#8A9BE8"/>` +
+  `<polygon points="16,23 25,16.5 16,29" fill="#627EEA"/>` +
+  `<polygon points="16,23 7,16.5 16,29" fill="#627EEA"/></svg>`;
+
+/** Small token tile carrying the ETH diamond instead of the "E" monogram. */
+function ethDiamondTile(): HTMLElement {
+  const tile = el("div", "token-tile token-tile-sm eth-tile");
+  tile.innerHTML = ETH_DIAMOND_SVG;
+  return tile;
+}
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -902,7 +919,7 @@ function renderDiscover(): void {
   renderFlightLog();
 }
 
-/** "Launch saya" list (Profile) — the same table as the Discover Missions
+/** "My launches" list (Profile) — the same table as the Discover Missions
  * table, one row per launch instead of a card grid. Same data the cards
  * showed: token, addresses, creator, config, price, raised, graduation,
  * status. Row click (or Trade) opens the detail page. */
@@ -1243,10 +1260,10 @@ async function renderProfile(): Promise<void> {
   idPanel.appendChild(addrRow);
   const actions = el("div", "seg");
   const copyBtn = el("button", "btn", "") as HTMLButtonElement;
-  const resetCopyLabel = (): void => { copyBtn.innerHTML = `${ICON_COPY}<span>Salin alamat</span>`; };
+  const resetCopyLabel = (): void => { copyBtn.innerHTML = `${ICON_COPY}<span>Copy address</span>`; };
   resetCopyLabel();
   copyBtn.onclick = async () => {
-    const done = () => { copyBtn.textContent = "Disalin ✓"; setTimeout(resetCopyLabel, 2000); };
+    const done = () => { copyBtn.textContent = "Copied ✓"; setTimeout(resetCopyLabel, 2000); };
     try {
       await navigator.clipboard.writeText(account);
       done();
@@ -1255,12 +1272,12 @@ async function renderProfile(): Promise<void> {
       ta.value = account;
       document.body.appendChild(ta);
       ta.select();
-      try { document.execCommand("copy"); done(); } catch { copyBtn.textContent = "Gagal menyalin"; }
+      try { document.execCommand("copy"); done(); } catch { copyBtn.textContent = "Copy failed"; }
       document.body.removeChild(ta);
     }
   };
   actions.appendChild(copyBtn);
-  const expLink = explorerLink(account, "Lihat di explorer");
+  const expLink = explorerLink(account, "View on explorer");
   expLink.className = "btn";
   expLink.insertAdjacentHTML("afterbegin", ICON_EXTERNAL_LINK);
   actions.appendChild(expLink);
@@ -1273,21 +1290,21 @@ async function renderProfile(): Promise<void> {
   refreshBtn.onclick = () => void renderProfile();
   view.appendChild(refreshBtn);
 
-  // Launch saya.
+  // My launches.
   const mine = myLaunches();
   const launchSec = el("div", "");
-  launchSec.appendChild(el("h3", "", "Launch saya"));
+  launchSec.appendChild(el("h3", "", "My launches"));
   const launchNote = el("div", "muted", mine.length === 0
-    ? "Kamu belum membuat launch apa pun (dari launch yang sudah ditemukan sejauh ini)."
-    : `${mine.length} launch dibuat oleh wallet ini.`);
+    ? "You haven't created any launches yet (among the launches found so far)."
+    : `${mine.length} launch${mine.length === 1 ? "" : "es"} created by this wallet.`);
   launchSec.appendChild(launchNote);
   const listBox = el("div", "");
   launchSec.appendChild(listBox);
   view.appendChild(launchSec);
 
-  // Token yang saya pegang.
+  // Tokens I hold.
   const holdSec = el("div", "");
-  holdSec.appendChild(el("h3", "", "Token yang saya pegang"));
+  holdSec.appendChild(el("h3", "", "Tokens I hold"));
   const holdBox = el("div", "muted", "Loading balances…");
   holdSec.appendChild(holdBox);
   view.appendChild(holdSec);
@@ -1324,7 +1341,7 @@ async function renderProfile(): Promise<void> {
   }
   listBox.innerHTML = "";
   if (mine.length === 0) {
-    listBox.appendChild(el("div", "empty", "Belum ada launch."));
+    listBox.appendChild(el("div", "empty", "No launches yet."));
   } else {
     listBox.appendChild(myLaunchesTable(mine));
   }
@@ -1335,7 +1352,7 @@ async function renderProfile(): Promise<void> {
     if (!stillHere()) return;
     holdBox.innerHTML = "";
     if (state.holdings.size === 0) {
-      holdBox.textContent = "Kamu belum memegang token apa pun dari launch yang dikenal di ConkFun.";
+      holdBox.textContent = "You don't hold any tokens from launches known to ConkFun yet.";
     } else {
       for (const [token, h] of state.holdings) {
         const r = el("div", "row hold-row");
@@ -1354,7 +1371,7 @@ async function renderProfile(): Promise<void> {
   }
 
   if (mine.length === 0 && state.holdings.size === 0) {
-    view.appendChild(el("div", "empty", "Kamu belum punya launch dan belum memegang token apa pun dari launch yang dikenal di ConkFun."));
+    view.appendChild(el("div", "empty", "You have no launches and don't hold any tokens from launches known to ConkFun yet."));
   }
 }
 
@@ -1502,7 +1519,7 @@ function chartPanel(l: EnrichedLaunch): HTMLElement {
   const chartSkeleton = el("div", "skeleton");
   chartSkeleton.style.height = `${CHART_HEIGHT}px`;
   body.appendChild(chartSkeleton);
-  body.appendChild(el("div", "muted", "Memuat grafik…"));
+  body.appendChild(el("div", "muted", "Loading chart…"));
   wrap.appendChild(body);
 
   async function loadChart(): Promise<void> {
@@ -1531,18 +1548,18 @@ function chartPanel(l: EnrichedLaunch): HTMLElement {
       if (data.trades === 0) {
         const startPrice = Number.parseFloat(l.price ?? "0") * scale;
         currentLabel.textContent = `${valueWord} ${formatPriceShort(startPrice)} ${unit}`;
-        body.appendChild(el("div", "muted", "Belum ada trade — harga masih harga awal."));
+        body.appendChild(el("div", "muted", "No trades yet — showing the starting price."));
         // Flat starting-price line, so the panel is never blank.
         body.appendChild(buildChartSvg(scalePoints(filterPointsByRange(data, "all")), CHART_WIDTH, CHART_HEIGHT, { mono: true }));
         body.appendChild(el("div", "muted chart-note",
-          `0 trade · dari blok ${data.launchBlock.toString()} · harga dari event Swap di chain`));
+          `0 trades · from block ${data.launchBlock.toString()} · price from on-chain Swap events`));
         return;
       }
       if (data.truncated) {
-        body.appendChild(el("div", "muted", "Menampilkan 1,2 jt blok terakhir."));
+        body.appendChild(el("div", "muted", "Showing the last 1.2M blocks."));
       }
       if (candles.length === 0) {
-        body.appendChild(el("div", "muted", "Tidak ada trade pada rentang ini."));
+        body.appendChild(el("div", "muted", "No trades in this range."));
         return;
       }
       const first = candles[0].open;
@@ -1552,10 +1569,10 @@ function chartPanel(l: EnrichedLaunch): HTMLElement {
       const change = first > 0 ? ((last - first) / first) * 100 : 0;
       currentLabel.textContent = `${valueWord} ${formatPriceShort(last)} ${unit}`;
       const stats: Array<[string, string, string?]> = [
-        [useMcap ? "Market cap" : "Harga sekarang", `${formatPriceShort(last)} ${unit}`],
-        ["Terendah", formatPriceShort(low)],
-        ["Tertinggi", formatPriceShort(high)],
-        ["Perubahan", formatPercentChange(change), change >= 0 ? "chart-up" : "chart-down"],
+        [useMcap ? "Market cap" : "Current price", `${formatPriceShort(last)} ${unit}`],
+        ["Low", formatPriceShort(low)],
+        ["High", formatPriceShort(high)],
+        ["Change", formatPercentChange(change), change >= 0 ? "chart-up" : "chart-down"],
       ];
       for (const [k, v, cls] of stats) {
         const s = el("div", "chart-stat");
@@ -1569,7 +1586,7 @@ function chartPanel(l: EnrichedLaunch): HTMLElement {
         body.appendChild(buildCandleSvg(candles, { log: candleLog, mono: true, volume: true }));
       }
       body.appendChild(el("div", "muted chart-note",
-        `${data.trades} trade · ${chartMode === "line" ? `${data.points.length} titik` : `${candles.length} candle`} · dari blok ${data.launchBlock.toString()} · harga dari event Swap di chain`));
+        `${data.trades} trade${data.trades === 1 ? "" : "s"} · ${chartMode === "line" ? `${data.points.length} points` : `${candles.length} candles`} · from block ${data.launchBlock.toString()} · price from on-chain Swap events`));
     } catch (err) {
       statsBox.innerHTML = "";
       body.innerHTML = "";
@@ -1758,11 +1775,16 @@ function fixedTokenPill(symbol: "ETH" | "WETH"): HTMLElement {
   const pill = el("button", "btn uni-pill") as HTMLButtonElement;
   pill.type = "button";
   pill.setAttribute("aria-haspopup", "listbox");
-  const tile = el("div", "token-tile token-tile-sm");
-  const mono = el("div", "monogram monogram-sm", symbol[0]);
-  mono.style.background = symbol === "ETH" ? "hsl(220 45% 45%)" : "hsl(160 45% 45%)";
-  tile.appendChild(mono);
-  pill.appendChild(tile);
+  // ETH shows the real diamond; WETH keeps its "W" monogram tile.
+  if (symbol === "ETH") {
+    pill.appendChild(ethDiamondTile());
+  } else {
+    const tile = el("div", "token-tile token-tile-sm");
+    const mono = el("div", "monogram monogram-sm", "W");
+    mono.style.background = "hsl(160 45% 45%)";
+    tile.appendChild(mono);
+    pill.appendChild(tile);
+  }
   pill.appendChild(el("span", "", symbol));
   pill.appendChild(el("span", "muted", "▾"));
   pill.onclick = () => toggleSwapMenu();
@@ -2737,11 +2759,16 @@ function fillSwapMenu(q: string): void {
     const row = el("button", "swap-token-row") as HTMLButtonElement;
     row.type = "button";
     row.setAttribute("role", "option");
-    const tile = el("div", "token-tile token-tile-sm");
-    const mono = el("div", "monogram monogram-sm", w.symbol[0]);
-    mono.style.background = w.symbol === "ETH" ? "hsl(220 45% 45%)" : "hsl(160 45% 45%)";
-    tile.appendChild(mono);
-    row.appendChild(tile);
+    // ETH shows the real diamond; WETH keeps its "W" monogram tile.
+    if (w.symbol === "ETH") {
+      row.appendChild(ethDiamondTile());
+    } else {
+      const tile = el("div", "token-tile token-tile-sm");
+      const mono = el("div", "monogram monogram-sm", "W");
+      mono.style.background = "hsl(160 45% 45%)";
+      tile.appendChild(mono);
+      row.appendChild(tile);
+    }
     const mid = el("div", "swap-token-mid");
     mid.appendChild(el("div", "swap-token-sym", w.symbol));
     mid.appendChild(el("div", "muted swap-token-name", w.name));
@@ -2933,8 +2960,10 @@ async function renderDetail(curve: string): Promise<void> {
     return;
   }
   try { history.replaceState(null, "", `#detail/${curve}`); } catch { /* non-fatal */ }
+  // The visit is still recorded (Discover keeps showing it), but the row
+  // itself stays hidden on the detail view — renderRecent() would un-hide
+  // it, so it is not called here.
   recordRecent(curve);
-  renderRecent();
 
   // Meta + curve state load in parallel (they were sequential). The chart
   // scan and the holders scan start right after, in parallel with each other.
@@ -2953,9 +2982,6 @@ async function renderDetail(curve: string): Promise<void> {
       launch.meta = meta;
       launch.curveData = curveData;
       launch.price = priceFromSqrtPrice(launch.curveData.state.sqrtPrice, launch.meta.decimals, 18);
-      // The "Recently viewed" chip rendered above showed the raw address
-      // (no symbol yet) — re-render now that the symbol is known.
-      renderRecent();
     } catch (err) {
       loadingBox.remove();
       view.appendChild(el("div", "error", `Failed to load: ${friendlyErrorMessage(err)}`));
@@ -2991,9 +3017,9 @@ async function renderDetail(curve: string): Promise<void> {
   copyBtn.onclick = async () => {
     try {
       await navigator.clipboard.writeText(l.token);
-      copyBtn.textContent = "Disalin ✓";
+      copyBtn.textContent = "Copied ✓";
       setTimeout(() => { copyBtn.textContent = "Copy"; }, 2000);
-    } catch { copyBtn.textContent = "Gagal menyalin"; }
+    } catch { copyBtn.textContent = "Copy failed"; }
   };
   addrRow.appendChild(copyBtn);
   const expLink = explorerLink(l.token, "Explorer");
@@ -3112,7 +3138,7 @@ function detailTabs(
         const trades = [...data.tradesList].sort((a, b) => Number(b.block - a.block) || b.logIndex - a.logIndex);
         body.innerHTML = "";
         if (trades.length === 0) {
-          body.appendChild(el("div", "muted", "Belum ada trade."));
+          body.appendChild(el("div", "muted", "No trades yet."));
           return;
         }
         body.appendChild(el("div", "muted", `${trades.length} trade`));
@@ -4099,8 +4125,8 @@ function showView(name: "discover" | "create" | "detail" | "profile" | "swap" | 
     $(`#mnav-${t}`).classList.toggle("active", t === name);
   }
   // "Recently viewed" is a discovery aid — it does not belong on Profile,
-  // Swap, or the Docs article.
-  if (name === "profile" || name === "swap" || name === "docs") {
+  // Swap, Docs, or the token detail view.
+  if (name === "profile" || name === "swap" || name === "docs" || name === "detail") {
     $("#recent-row").classList.add("hidden");
   } else {
     renderRecent();
@@ -4122,7 +4148,7 @@ function scrollDocsAnchor(hash: string): void {
 async function verifyChainStatus(): Promise<void> {
   const statusEl = $("#chain-status");
   statusEl.innerHTML = "";
-  statusEl.textContent = "Memuat data chain…";
+  statusEl.textContent = "Loading chain data…";
   try {
     const v = await verifyCore();
     state.verifiedBlock = v.blockNumber;
@@ -4369,6 +4395,9 @@ async function boot(): Promise<void> {
       }
     }
     state.swapCurve = launch ? launch.curve : null;
+    // A token deep link leaves the wrap pair, like picking a launch row —
+    // otherwise a stale wrap state keeps showing the wrap form instead.
+    if (launch) state.swapWrap = null;
     showView("swap");
     renderSwap();
   };
