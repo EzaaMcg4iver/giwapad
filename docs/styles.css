@@ -691,6 +691,26 @@ body.bg-blobs #bg-blobs { display: block; }
 .chart-lastlabel.candle-up { fill: var(--candle-up); }
 .chart-lastlabel.candle-down { fill: var(--candle-down); }
 
+/* TradingView-style chart toolbar: price/mcap, timeframes, candles/line,
+   Log — one row, current value pinned to the right. Segmented groups keep
+   their own spacing; the toolbar itself adds none. */
+.chart-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.chart-toolbar .seg { margin: 0; }
+.chart-current { margin-left: auto; font-size: var(--text-sm); color: var(--muted); white-space: nowrap; }
+
+/* Monochrome candles (TradingView style): up = filled, down = hollow,
+   both in the theme text colour — black on light, white on dark. */
+.candle-mono-up { fill: var(--text); stroke: var(--text); }
+.candle-mono-down { fill: transparent; stroke: var(--text); }
+/* Hollow down-bodies need a visible outline — .candle-body zeroes the stroke. */
+.candle-body.candle-mono-down { stroke-width: 1; }
+.candle-vol { fill: var(--muted); opacity: 0.35; }
+.chart-svg.chart-mono .chart-lastline { stroke: var(--text); }
+.chart-svg.chart-mono .chart-lastlabel { fill: var(--text); }
+.chart-svg.chart-mono .chart-line { stroke: var(--text); }
+.chart-svg.chart-mono .chart-area { fill: var(--text); opacity: 0.06; }
+.chart-svg.chart-mono .chart-dot { fill: var(--text); }
+
 @media (max-width: 1024px) {
   /* minmax(0, 1fr), not bare 1fr: a bare 1fr keeps the grid item's
      min-width:auto, so the 760px-min tables stretch the page past the

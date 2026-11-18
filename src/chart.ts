@@ -72,11 +72,12 @@ export function filterPointsByRange(data: ChartData, range: ChartRange): ChartPo
   return [{ ...before, timeMs: cutoff }, ...visible];
 }
 
-/** Line + area SVG for the given points; empty points give an empty canvas. */
+/** Line + area SVG for the given points; empty points give an empty canvas. Mono renders a single-colour line (TradingView-style), otherwise the line takes the period's direction. */
 export function buildChartSvg(
   points: ChartPoint[],
   width = CHART_WIDTH,
   height = CHART_HEIGHT,
+  opts: { mono?: boolean } = {},
 ): Element {
   const NS = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(NS, "svg");
@@ -84,6 +85,7 @@ export function buildChartSvg(
   svg.setAttribute("class", "chart-svg");
   svg.setAttribute("role", "img");
   svg.setAttribute("aria-label", "Price history chart");
+  if (opts.mono) svg.classList.add("chart-mono");
   if (points.length === 0) return svg;
   // TradingView convention: the line takes the period's direction — green
   // when the last price is at or above the first, red when below.
@@ -173,13 +175,14 @@ export interface Candle {
   trades: number;
 }
 
-export type CandleTimeframe = "auto" | "1m" | "5m" | "15m" | "1h" | "4h" | "24h";
+export type CandleTimeframe = "1s" | "15s" | "1m" | "5m" | "15m" | "1h" | "4h" | "24h";
 
 const MS_PER_MINUTE = 60_000;
 
-/** Timeframe selector options, in display order. Auto picks a bucket so the chart holds at most ~48 candles. */
+/** Timeframe selector options, in display order — TradingView-style toolbar set. */
 export const CANDLE_TIMEFRAMES: ReadonlyArray<{ timeframe: CandleTimeframe; label: string; ms: number }> = [
-  { timeframe: "auto", label: "Auto", ms: 0 },
+  { timeframe: "1s", label: "1s", ms: 1_000 },
+  { timeframe: "15s", label: "15s", ms: 15_000 },
   { timeframe: "1m", label: "1m", ms: MS_PER_MINUTE },
   { timeframe: "5m", label: "5m", ms: 5 * MS_PER_MINUTE },
   { timeframe: "15m", label: "15m", ms: 15 * MS_PER_MINUTE },
@@ -188,28 +191,9 @@ export const CANDLE_TIMEFRAMES: ReadonlyArray<{ timeframe: CandleTimeframe; labe
   { timeframe: "24h", label: "24h", ms: 24 * 60 * MS_PER_MINUTE },
 ];
 
-/** Largest number of candles the Auto timeframe aims for. */
-const CANDLE_AUTO_TARGET = 48;
-
-const CANDLE_AUTO_STEPS_MS = [
-  MS_PER_MINUTE,
-  5 * MS_PER_MINUTE,
-  15 * MS_PER_MINUTE,
-  60 * MS_PER_MINUTE,
-  4 * 60 * MS_PER_MINUTE,
-  24 * 60 * MS_PER_MINUTE,
-] as const;
-
-function resolveBucketMs(trades: TradeEvent[], timeframe: CandleTimeframe): number {
-  if (timeframe !== "auto") {
-    return CANDLE_TIMEFRAMES.find((t) => t.timeframe === timeframe)?.ms ?? MS_PER_MINUTE;
-  }
-  if (trades.length === 0) return MS_PER_MINUTE;
-  const span = trades[trades.length - 1].timeMs - trades[0].timeMs;
-  for (const step of CANDLE_AUTO_STEPS_MS) {
-    if (span / step <= CANDLE_AUTO_TARGET) return step;
-  }
-  return CANDLE_AUTO_STEPS_MS[CANDLE_AUTO_STEPS_MS.length - 1];
+/** Bucket width for a timeframe; unknown values fall back to 1m. */
+function resolveBucketMs(timeframe: CandleTimeframe): number {
+  return CANDLE_TIMEFRAMES.find((t) => t.timeframe === timeframe)?.ms ?? MS_PER_MINUTE;
 }
 
 /**
@@ -219,7 +203,7 @@ function resolveBucketMs(trades: TradeEvent[], timeframe: CandleTimeframe): numb
  */
 export function buildCandles(trades: TradeEvent[], timeframe: CandleTimeframe): Candle[] {
   if (trades.length === 0) return [];
-  const bucketMs = resolveBucketMs(trades, timeframe);
+  const bucketMs = resolveBucketMs(timeframe);
   const byBucket = new Map<number, TradeEvent[]>();
   for (const t of trades) {
     const bucket = Math.floor(t.timeMs / bucketMs);
@@ -245,10 +229,17 @@ export function buildCandles(trades: TradeEvent[], timeframe: CandleTimeframe): 
   return candles;
 }
 
-/** Candlestick SVG: green body when close >= open, red otherwise, with wicks. Log scale optional. */
+/** Height of the volume strip at the bottom of the candle pane (px). */
+const CANDLE_VOLUME_HEIGHT = 34;
+
+/**
+ * Candlestick SVG, TradingView-style: monochrome bodies when `mono` (up =
+ * filled, down = hollow, both in the theme text colour), grey volume bars
+ * in a strip below the price area when `volume`. Log scale optional.
+ */
 export function buildCandleSvg(
   candles: Candle[],
-  opts: { log?: boolean; width?: number; height?: number } = {},
+  opts: { log?: boolean; width?: number; height?: number; mono?: boolean; volume?: boolean } = {},
 ): Element {
   const width = opts.width ?? CHART_WIDTH;
   const height = opts.height ?? CHART_HEIGHT;
@@ -258,8 +249,12 @@ export function buildCandleSvg(
   svg.setAttribute("class", "chart-svg");
   svg.setAttribute("role", "img");
   svg.setAttribute("aria-label", "Candlestick price chart");
+  if (opts.mono) svg.classList.add("chart-mono");
   if (candles.length === 0) return svg;
   const { left: padL, right: padR, top: padT, bottom: padB } = CHART_PADDING;
+  // The volume strip sits above the time labels; the price area ends above it.
+  const volH = opts.volume ? CANDLE_VOLUME_HEIGHT : 0;
+  const priceBottom = height - padB - volH;
   const mk = (tag: string): Element => document.createElementNS(NS, tag);
   const xs = candles.map((c) => c.timeMs);
   let x0 = Math.min(...xs);
@@ -281,14 +276,14 @@ export function buildCandleSvg(
   ly0 -= yPad;
   ly1 += yPad;
   const X = (t: number): number => padL + ((t - x0) / (x1 - x0)) * (width - padL - padR);
-  const Y = (v: number): number => padT + (1 - (toY(v) - ly0) / (ly1 - ly0)) * (height - padT - padB);
+  const Y = (v: number): number => padT + (1 - (toY(v) - ly0) / (ly1 - ly0)) * (priceBottom - padT);
   const fromY = (y: number): number => {
-    const ly = ly0 + (1 - (y - padT) / (height - padT - padB)) * (ly1 - ly0);
+    const ly = ly0 + (1 - (y - padT) / (priceBottom - padT)) * (ly1 - ly0);
     return log ? 10 ** ly : ly;
   };
   for (let i = 0; i < CHART_GRID_LINES; i++) {
     const v = ly0 + ((ly1 - ly0) * i) / (CHART_GRID_LINES - 1);
-    const y = padT + (1 - (v - ly0) / (ly1 - ly0)) * (height - padT - padB);
+    const y = padT + (1 - (v - ly0) / (ly1 - ly0)) * (priceBottom - padT);
     const line = mk("line");
     line.setAttribute("x1", String(padL));
     line.setAttribute("x2", String(width - padR));
@@ -316,10 +311,25 @@ export function buildCandleSvg(
   }
   const slot = (width - padL - padR) / candles.length;
   const bodyW = Math.max(2, Math.min(14, slot * 0.6));
+  // Volume bars first, so candle bodies draw over them if they ever overlap.
+  if (opts.volume) {
+    const maxVol = Math.max(...candles.map((c) => c.volumeWeth), 0);
+    for (const c of candles) {
+      if (maxVol <= 0) break;
+      const barH = Math.max(1, (c.volumeWeth / maxVol) * (volH - 4));
+      const bar = mk("rect");
+      bar.setAttribute("x", String(X(c.timeMs) - bodyW / 2));
+      bar.setAttribute("y", String(height - padB - barH));
+      bar.setAttribute("width", String(bodyW));
+      bar.setAttribute("height", String(barH));
+      bar.setAttribute("class", "candle-vol");
+      svg.appendChild(bar);
+    }
+  }
   for (const c of candles) {
     const x = X(c.timeMs);
     const up = c.close >= c.open;
-    const cls = up ? "candle-up" : "candle-down";
+    const cls = opts.mono ? (up ? "candle-mono-up" : "candle-mono-down") : up ? "candle-up" : "candle-down";
     const wick = mk("line");
     wick.setAttribute("x1", String(x));
     wick.setAttribute("x2", String(x));
@@ -337,7 +347,7 @@ export function buildCandleSvg(
   }
   const last = candles[candles.length - 1];
   // Last-price line follows the last candle's direction (TradingView style).
-  const lastCls = last.close >= last.open ? "candle-up" : "candle-down";
+  const lastCls = opts.mono ? "chart-mono" : last.close >= last.open ? "candle-up" : "candle-down";
   const lastLine = mk("line");
   lastLine.setAttribute("x1", String(padL));
   lastLine.setAttribute("x2", String(width - padR));

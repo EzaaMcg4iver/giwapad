@@ -75,6 +75,7 @@ import {
   CANDLE_TIMEFRAMES,
   CHART_CACHE_TTL_MS,
   CHART_HEIGHT,
+  CHART_WIDTH,
   filterPointsByRange,
   formatPercentChange,
   formatPriceShort,
@@ -1359,13 +1360,19 @@ async function renderProfile(): Promise<void> {
 
 // ---------------------------------------------------------------------------
 // Candlestick chart (detail view) — custom SVG, no chart library, no new deps.
-// Data comes from real on-chain Swap events (see scanCurveChart): OHLC
-// candles per timeframe + a Log-scale toggle. Drawing and bucketing live in
-// ./chart.ts; this panel only wires it up.
+// Data comes from real on-chain Swap events (see scanCurveChart). TradingView-
+// style toolbar: price/mcap switch, 1s–1d timeframes, candles/line toggle,
+// Log scale, and the current value at the top right. Candles are monochrome
+// with grey volume bars; drawing and bucketing live in ./chart.ts, this panel
+// only wires it up.
 // ---------------------------------------------------------------------------
 
-let candleTimeframe: CandleTimeframe = "auto";
+let candleTimeframe: CandleTimeframe = "1m";
 let candleLog = false;
+type ChartMode = "candles" | "line";
+let chartMode: ChartMode = "candles";
+type ChartValue = "price" | "mcap";
+let chartValue: ChartValue = "price";
 const chartCache = new Map<string, { at: number; data: ChartData }>();
 const chartInflight = new Map<string, Promise<ChartData>>();
 
@@ -1417,8 +1424,67 @@ function computeHolders(
 
 function chartPanel(l: EnrichedLaunch): HTMLElement {
   const wrap = el("div", "panel chart-panel");
-  const headRow = el("div", "chart-head");
-  headRow.appendChild(el("h3", "", `${l.meta!.symbol} / WETH`));
+  // Circulating supply for the mcap view: mcap / price, null until both known.
+  const mcapSupply = (): number | null => {
+    const mcap = launchMcap(l);
+    const price = Number.parseFloat(l.price ?? "");
+    if (mcap === null || !Number.isFinite(price) || price <= 0) return null;
+    const supply = mcap / price;
+    return Number.isFinite(supply) && supply > 0 ? supply : null;
+  };
+  const toolbar = el("div", "chart-toolbar");
+  // One segmented group: builds the buttons, marks the active one, calls back on pick.
+  const segGroup = <T,>(
+    options: ReadonlyArray<{ value: T; label: string }>,
+    active: T,
+    onPick: (v: T) => void,
+  ): { group: HTMLElement; buttons: Map<T, HTMLButtonElement> } => {
+    const group = el("div", "seg");
+    const buttons = new Map<T, HTMLButtonElement>();
+    for (const { value, label } of options) {
+      const b = el("button", `btn seg-btn${active === value ? " active" : ""}`, label) as HTMLButtonElement;
+      b.onclick = () => {
+        for (const [v, bb] of buttons) bb.classList.toggle("active", v === value);
+        onPick(value);
+      };
+      buttons.set(value, b);
+      group.appendChild(b);
+    }
+    return { group, buttons };
+  };
+  const valueSeg = segGroup<ChartValue>(
+    [
+      { value: "price", label: "price" },
+      { value: "mcap", label: "mcap" },
+    ],
+    chartValue,
+    (v) => {
+      chartValue = v;
+      void loadChart();
+    },
+  );
+  toolbar.appendChild(valueSeg.group);
+  const tfSeg = segGroup<CandleTimeframe>(
+    CANDLE_TIMEFRAMES.map(({ timeframe, label }) => ({ value: timeframe, label })),
+    candleTimeframe,
+    (tf) => {
+      candleTimeframe = tf;
+      void loadChart();
+    },
+  );
+  toolbar.appendChild(tfSeg.group);
+  const modeSeg = segGroup<ChartMode>(
+    [
+      { value: "candles", label: "candles" },
+      { value: "line", label: "line" },
+    ],
+    chartMode,
+    (m) => {
+      chartMode = m;
+      void loadChart();
+    },
+  );
+  toolbar.appendChild(modeSeg.group);
   const logBtn = el("button", `btn seg-btn${candleLog ? " active" : ""}`, "Log") as HTMLButtonElement;
   logBtn.title = "Toggle log scale";
   logBtn.onclick = () => {
@@ -1426,21 +1492,10 @@ function chartPanel(l: EnrichedLaunch): HTMLElement {
     logBtn.classList.toggle("active", candleLog);
     void loadChart();
   };
-  headRow.appendChild(logBtn);
-  wrap.appendChild(headRow);
-  const segRow = el("div", "seg");
-  const tfBtns = new Map<CandleTimeframe, HTMLButtonElement>();
-  for (const { timeframe: tf, label } of CANDLE_TIMEFRAMES) {
-    const b = el("button", `btn seg-btn${candleTimeframe === tf ? " active" : ""}`, label) as HTMLButtonElement;
-    b.onclick = () => {
-      candleTimeframe = tf;
-      for (const [t, bb] of tfBtns) bb.classList.toggle("active", t === tf);
-      void loadChart();
-    };
-    tfBtns.set(tf, b);
-    segRow.appendChild(b);
-  }
-  wrap.appendChild(segRow);
+  toolbar.appendChild(logBtn);
+  const currentLabel = el("span", "chart-current", "");
+  toolbar.appendChild(currentLabel);
+  wrap.appendChild(toolbar);
   const statsBox = el("div", "chart-stats");
   wrap.appendChild(statsBox);
   const body = el("div", "chart-body");
@@ -1453,13 +1508,32 @@ function chartPanel(l: EnrichedLaunch): HTMLElement {
   async function loadChart(): Promise<void> {
     try {
       const data = await getDetailChartData(l);
-      const candles = buildCandles(data.tradesList, candleTimeframe);
+      // MCap view = price × circulating supply (one factor for every point,
+      // so the shape is identical and only the axis unit changes).
+      const supply = mcapSupply();
+      const mcapBtn = valueSeg.buttons.get("mcap");
+      if (mcapBtn) mcapBtn.disabled = supply === null;
+      const useMcap = chartValue === "mcap" && supply !== null;
+      const scale = useMcap ? supply : 1;
+      const unit = useMcap ? "ETH" : "WETH";
+      const valueWord = useMcap ? "mcap" : "price";
+      const scalePoints = (pts: typeof data.points): typeof data.points =>
+        pts.map((p) => ({ ...p, price: p.price * scale }));
+      const candles = buildCandles(data.tradesList, candleTimeframe).map((c) => ({
+        ...c,
+        open: c.open * scale,
+        high: c.high * scale,
+        low: c.low * scale,
+        close: c.close * scale,
+      }));
       statsBox.innerHTML = "";
       body.innerHTML = "";
       if (data.trades === 0) {
+        const startPrice = Number.parseFloat(l.price ?? "0") * scale;
+        currentLabel.textContent = `${valueWord} ${formatPriceShort(startPrice)} ${unit}`;
         body.appendChild(el("div", "muted", "Belum ada trade — harga masih harga awal."));
         // Flat starting-price line, so the panel is never blank.
-        body.appendChild(buildChartSvg(filterPointsByRange(data, "all")));
+        body.appendChild(buildChartSvg(scalePoints(filterPointsByRange(data, "all")), CHART_WIDTH, CHART_HEIGHT, { mono: true }));
         body.appendChild(el("div", "muted chart-note",
           `0 trade · dari blok ${data.launchBlock.toString()} · harga dari event Swap di chain`));
         return;
@@ -1476,8 +1550,9 @@ function chartPanel(l: EnrichedLaunch): HTMLElement {
       const low = Math.min(...candles.map((c) => c.low));
       const high = Math.max(...candles.map((c) => c.high));
       const change = first > 0 ? ((last - first) / first) * 100 : 0;
+      currentLabel.textContent = `${valueWord} ${formatPriceShort(last)} ${unit}`;
       const stats: Array<[string, string, string?]> = [
-        ["Harga sekarang", `${formatPriceShort(last)} WETH`],
+        [useMcap ? "Market cap" : "Harga sekarang", `${formatPriceShort(last)} ${unit}`],
         ["Terendah", formatPriceShort(low)],
         ["Tertinggi", formatPriceShort(high)],
         ["Perubahan", formatPercentChange(change), change >= 0 ? "chart-up" : "chart-down"],
@@ -1488,9 +1563,13 @@ function chartPanel(l: EnrichedLaunch): HTMLElement {
         s.appendChild(el("div", `chart-stat-v${cls ? " " + cls : ""}`, v));
         statsBox.appendChild(s);
       }
-      body.appendChild(buildCandleSvg(candles, { log: candleLog }));
+      if (chartMode === "line") {
+        body.appendChild(buildChartSvg(scalePoints(filterPointsByRange(data, "all")), CHART_WIDTH, CHART_HEIGHT, { mono: true }));
+      } else {
+        body.appendChild(buildCandleSvg(candles, { log: candleLog, mono: true, volume: true }));
+      }
       body.appendChild(el("div", "muted chart-note",
-        `${data.trades} trade · ${candles.length} candle · dari blok ${data.launchBlock.toString()} · harga dari event Swap di chain`));
+        `${data.trades} trade · ${chartMode === "line" ? `${data.points.length} titik` : `${candles.length} candle`} · dari blok ${data.launchBlock.toString()} · harga dari event Swap di chain`));
     } catch (err) {
       statsBox.innerHTML = "";
       body.innerHTML = "";
