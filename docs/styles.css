@@ -48,50 +48,51 @@
 
 :root {
   color-scheme: dark;
-  --bg: #0d1117;
-  --topbar-bg: rgba(13, 17, 23, 0.72);
-  --glass-bg: rgba(28, 35, 48, 0.55);
+  /* Material 3 (Material You) dark scheme, violet-seeded. */
+  --bg: #141218;
+  --topbar-bg: rgba(20, 18, 24, 0.82);
+  --glass-bg: rgba(43, 41, 48, 0.55);
   --glass-border: rgba(255, 255, 255, 0.09);
   --glass-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-  --panel: #161b22;
-  --panel2: #1c2330;
-  --border: #2d333b;
-  --text: #e6edf3;
-  --muted: #8b949e;
-  --accent: #a78bfa;
-  --accent-soft: rgba(167, 139, 250, 0.22);
-  --accent-solid: #7c3aed;
-  --selection: rgba(167, 139, 250, 0.35);
-  --accent2: #c4b5fd;
-  --ok: #3fb950;
-  --ok-bg: #0f2a16;
-  --ok-border: #1d4d2a;
-  --warn: #d29922;
+  --panel: #211f26;
+  --panel2: #2b2930;
+  --border: #49454f;
+  --text: #e6e1e5;
+  --muted: #cac4d0;
+  --accent: #d0bcff;
+  --accent-soft: rgba(208, 188, 255, 0.16);
+  --accent-solid: #6750a4;
+  --selection: rgba(208, 188, 255, 0.30);
+  --accent2: #eaddff;
+  --ok: #a8dab5;
+  --ok-bg: #14301c;
+  --ok-border: #2d5a33;
+  --warn: #fdd663;
   --warn-bg: #2a2111;
   --warn-border: #5a4318;
-  --err: #f85149;
+  --err: #f2b8b5;
   --err-bg: #2a1215;
   --err-border: #5a1d22;
-  --link: #c4b5fd;
-  --preview-bg: #1d1830;
-  --preview-border: #3b2f66;
-  --badge-1: #7ee787;
+  --link: #d0bcff;
+  --preview-bg: #2b2930;
+  --preview-border: #4f378b;
+  --badge-1: #a8dab5;
   --badge-1-border: #2d5a33;
-  --badge-2: #f2cc60;
+  --badge-2: #fdd663;
   --badge-2-border: #6b5518;
-  --badge-3: #79b8ff;
+  --badge-3: #a8c7fa;
   --badge-3-border: #1f3a5f;
   --candle-up: #22c55e;
   --candle-down: #ef4444;
-  --focus-ring-color: rgba(167, 139, 250, 0.45);
+  --focus-ring-color: rgba(208, 188, 255, 0.45);
   --focus-ring: 0 0 0 3px var(--focus-ring-color);
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.45), 0 1px 3px 1px rgba(0, 0, 0, 0.25);
-  --shadow-2: 0 2px 6px rgba(0, 0, 0, 0.5), 0 6px 16px rgba(0, 0, 0, 0.35);
-  --radius: 12px;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3), 0 1px 3px 1px rgba(0, 0, 0, 0.15);
+  --shadow-2: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 6px 2px rgba(0, 0, 0, 0.15);
+  --radius: 16px;
   --radius-xs: 4px;
   --radius-sm: 8px;
-  --radius-md: 10px;
-  --radius-xl: 16px;
+  --radius-md: 12px;
+  --radius-xl: 24px;
   --radius-pill: 999px;
   --text-xs: 11px;
   --text-sm: 12px;
@@ -105,21 +106,22 @@
 
 [data-theme="light"] {
   color-scheme: light;
-  --bg: #f4f4f7;
-  --topbar-bg: rgba(244, 244, 247, 0.72);
+  /* Material 3 (Material You) light scheme, violet-seeded. */
+  --bg: #fef7ff;
+  --topbar-bg: rgba(254, 247, 255, 0.82);
   --glass-bg: rgba(255, 255, 255, 0.55);
   --glass-border: rgba(255, 255, 255, 0.65);
   --glass-shadow: 0 8px 24px rgba(16, 24, 40, 0.12);
-  --panel: #ffffff;
-  --panel2: #ececf1;
-  --border: #d8d8e0;
-  --text: #1c1b1f;
-  --muted: #5f6368;
-  --accent: #7c3aed;
-  --accent-soft: rgba(124, 58, 237, 0.12);
-  --accent-solid: #6d28d9;
-  --selection: rgba(124, 58, 237, 0.25);
-  --accent2: #7c3aed;
+  --panel: #f3edf7;
+  --panel2: #ece6f0;
+  --border: #cac4d0;
+  --text: #1d1b20;
+  --muted: #49454f;
+  --accent: #6750a4;
+  --accent-soft: rgba(103, 80, 164, 0.12);
+  --accent-solid: #6750a4;
+  --selection: rgba(103, 80, 164, 0.25);
+  --accent2: #6750a4;
   --ok: #1b8737;
   --ok-bg: #e6f4ea;
   --ok-border: #a3d9a5;
@@ -129,7 +131,7 @@
   --err: #b3261e;
   --err-bg: #fdecea;
   --err-border: #f5c6cb;
-  --link: #6d28d9;
+  --link: #6750a4;
   --preview-bg: #f1ebfe;
   --preview-border: #d9c8fa;
   --badge-1: #137333;
@@ -140,9 +142,9 @@
   --badge-3-border: #bfdbfe;
   --candle-up: #16a34a;
   --candle-down: #dc2626;
-  --focus-ring-color: rgba(124, 58, 237, 0.35);
+  --focus-ring-color: rgba(103, 80, 164, 0.35);
   --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.08), 0 1px 3px rgba(16, 24, 40, 0.1);
-  --shadow-2: 0 4px 8px rgba(16, 24, 40, 0.1), 0 8px 20px rgba(16, 24, 40, 0.08);
+  --shadow-2: 0 1px 2px rgba(16, 24, 40, 0.1), 0 2px 6px 2px rgba(16, 24, 40, 0.1);
 }
 
 /* Focus: no outline anywhere in this app. Every focusable element shows the
@@ -189,7 +191,8 @@ h4 { margin: 4px 0 8px; font-size: var(--text-base); font-weight: 600; line-heig
 
 .topbar {
   display: flex; align-items: center; gap: 12px; flex-wrap: nowrap;
-  padding: 6px 12px;
+  min-height: 64px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--border);
   /* Frosted glass: the blob background shows through the navbar. Height,
      layout, and contents are unchanged. */
@@ -221,25 +224,16 @@ h4 { margin: 4px 0 8px; font-size: var(--text-base); font-weight: 600; line-heig
   transition: background-color 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
 }
 .tab svg { width: 14px; height: 14px; flex: none; }
-/* Navbar active tab is liquid glass, not a solid fill: translucent purple
-   tint + blur, purple text, soft purple glow. Inactive tabs stay plain text. */
+/* Navbar active tab: Material 3 tonal pill — soft primary tint + primary
+   text. Inactive tabs stay plain text. */
 .tab.active {
-  background: rgba(167, 139, 250, 0.14);
-  border-color: rgba(167, 139, 250, 0.35);
-  color: #c4b5fd;
-  -webkit-backdrop-filter: blur(12px) saturate(1.4);
-  backdrop-filter: blur(12px) saturate(1.4);
-  box-shadow: 0 4px 18px rgba(124, 58, 237, 0.28);
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent);
+  font-weight: 600;
 }
-.tab:hover { border-color: var(--border); }
-.tab.active:hover { background: rgba(167, 139, 250, 0.22); border-color: rgba(167, 139, 250, 0.55); }
-[data-theme="light"] .tab.active {
-  background: rgba(109, 40, 217, 0.10);
-  border-color: rgba(109, 40, 217, 0.35);
-  color: #6d28d9;
-  box-shadow: 0 4px 16px rgba(109, 40, 217, 0.18);
-}
-[data-theme="light"] .tab.active:hover { background: rgba(109, 40, 217, 0.16); border-color: rgba(109, 40, 217, 0.5); }
+.tab:hover { background: var(--panel2); }
+.tab.active:hover { background: var(--accent-soft); filter: brightness(1.15); }
 .tab:active { transform: scale(0.97); }
 .tab:focus-visible { box-shadow: var(--focus-ring); }
 /* Theme toggle + wallet sit together at the right end of the navbar,
@@ -255,27 +249,8 @@ h4 { margin: 4px 0 8px; font-size: var(--text-base); font-weight: 600; line-heig
    Profile + Disconnect. Right-aligned under the button, inside the viewport. */
 .wallet-menu-wrap { position: relative; display: flex; }
 .wallet-btn { font-family: ui-monospace, monospace; font-size: 12px; }
-/* Header wallet button (Connect + connected address) is liquid glass, not a
-   solid fill — same treatment as the active nav tab. Scoped to #wallet-status
-   so .btn.primary stays solid everywhere else (hero, tables, Trade panels). */
-#wallet-status .btn.primary {
-  background: rgba(167, 139, 250, 0.14);
-  border-color: rgba(167, 139, 250, 0.35);
-  color: #c4b5fd;
-  -webkit-backdrop-filter: blur(12px) saturate(1.4);
-  backdrop-filter: blur(12px) saturate(1.4);
-  box-shadow: 0 4px 18px rgba(124, 58, 237, 0.28);
-}
-#wallet-status .btn.primary:hover { background: rgba(167, 139, 250, 0.22); border-color: rgba(167, 139, 250, 0.55); filter: none; }
-#wallet-status .btn.primary:focus-visible { box-shadow: var(--focus-ring), 0 4px 18px rgba(124, 58, 237, 0.28); }
-[data-theme="light"] #wallet-status .btn.primary {
-  background: rgba(109, 40, 217, 0.10);
-  border-color: rgba(109, 40, 217, 0.35);
-  color: #6d28d9;
-  box-shadow: 0 4px 16px rgba(109, 40, 217, 0.18);
-}
-[data-theme="light"] #wallet-status .btn.primary:hover { background: rgba(109, 40, 217, 0.16); border-color: rgba(109, 40, 217, 0.5); }
-[data-theme="light"] #wallet-status .btn.primary:focus-visible { box-shadow: var(--focus-ring), 0 4px 16px rgba(109, 40, 217, 0.18); }
+/* Header wallet button (Connect + connected address): standard Material
+   filled button (accent-solid + white), same as .btn.primary everywhere. */
 .wallet-menu {
   position: absolute; top: calc(100% + 8px); right: 0; z-index: 20;
   min-width: 200px; padding: 6px;
@@ -341,8 +316,8 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 
 .btn {
   background: var(--panel2); color: var(--text);
-  border: 1px solid var(--border); border-radius: var(--radius-md);
-  padding: 7px 12px; min-height: 36px; font-size: var(--text-base); font-weight: 500;
+  border: 1px solid var(--border); border-radius: var(--radius-pill);
+  padding: 7px 16px; min-height: 40px; font-size: var(--text-base); font-weight: 600;
   letter-spacing: 0.01em; cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s, filter 0.15s, transform 0.1s;
@@ -379,11 +354,12 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-top: 16px; }
 .card {
   background: var(--panel);
-  border-radius: var(--radius); padding: 12px; cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 20px; padding: 16px; cursor: pointer;
   box-shadow: var(--shadow-1);
-  transition: box-shadow 0.15s, transform 0.15s;
+  transition: box-shadow 0.15s, transform 0.15s, background-color 0.15s;
 }
-.card:hover { box-shadow: var(--shadow-2); transform: translateY(-1px); }
+.card:hover { background: var(--panel2); box-shadow: var(--shadow-2); transform: translateY(-2px); }
 .card:active { transform: translateY(0); box-shadow: var(--shadow-1); }
 .card:focus-visible { box-shadow: var(--focus-ring); }
 .card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
@@ -493,8 +469,8 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 /* Header search + faucet + recently viewed. */
 .header-search {
   display: flex; align-items: center; gap: 8px; flex: 1 1 240px; max-width: 400px; min-width: 0;
-  background: var(--panel2); border: 1px solid var(--border); border-radius: var(--radius-md);
-  padding: 0 8px 0 12px; min-height: 44px;
+  background: var(--panel2); border: 1px solid transparent; border-radius: var(--radius-pill);
+  padding: 0 8px 0 16px; min-height: 48px;
 }
 .header-search:focus-within { border-color: var(--accent); box-shadow: var(--focus-ring); }
 .header-search svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
@@ -631,21 +607,10 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
   padding-right: 0;
 }
 
-/* Discover page: no cards either — hero, Top-by-mcap cards, and the
-   Flight log panel blend with the blob background, same flat treatment
-   as the detail page. The Missions table was already flat (no card
-   background). Content, pills, Trade buttons, and clicks are unchanged;
-   hover/active no longer lift the card (no shadow to lift into). */
-#view-discover .card,
-#view-discover .panel {
-  background: transparent;
-  box-shadow: none;
-}
-#view-discover .card:hover,
-#view-discover .card:active {
-  box-shadow: none;
-  transform: none;
-}
+/* Discover page: Material 3 elevated surfaces — hero, Top-by-mcap cards,
+   and the Flight log panel use the standard .card/.panel treatment
+   (surface-container + outline + elevation), matching the approved
+   Material preview. Content, pills, Trade buttons, and clicks unchanged. */
 
 /* Profile page: no cards either — the Wallet panel and the "Launch saya"
    table blend with the blob background, same flat treatment as the
