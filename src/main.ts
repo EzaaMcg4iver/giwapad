@@ -654,6 +654,7 @@ function fuelSegments(pct: number, segments = 20): HTMLElement {
 
 function renderHero(): void {
   const box = $("#home-hero");
+  if (!box) return;
   box.innerHTML = "";
   const top = topByMcap();
   if (!top) {
@@ -711,6 +712,7 @@ function renderHero(): void {
 
 function renderTopCards(): void {
   const box = $("#home-top");
+  if (!box) return;
   box.innerHTML = "";
   const ranked = [...state.launches]
     .map((l) => ({ l, mcap: launchMcap(l) }))
@@ -753,6 +755,7 @@ function renderTopCards(): void {
 
 function renderMissionsTable(): void {
   const box = $("#missions-table");
+  if (!box) return;
   box.innerHTML = "";
   const items = filteredLaunches();
   if (items.length === 0) {
@@ -861,6 +864,7 @@ function buildFlightEntries(): FlightEntry[] {
 
 function renderFlightLog(): void {
   const box = $("#home-flight");
+  if (!box) return;
   box.innerHTML = "";
   const head = el("div", "flight-head");
   head.appendChild(el("h3", "", "Live Trades"));
@@ -910,16 +914,103 @@ function renderFlightLog(): void {
 
 function renderDiscover(): void {
   // "Near graduation" + "My launches" tabs are temporarily hidden
-  // (2026-11-17, user order) — never leave the table stuck on them.
+  // (2026-11-17, user order) — never leave the grid stuck on them.
   if (state.missionsTab === "near") state.missionsTab = "trending";
   if (state.mineOnly) state.mineOnly = false;
   const count = state.launches.length;
   $("#launch-count").textContent =
     `${filteredLaunches().length} of ${count} launches · ${state.scanStatus}`;
-  renderHero();
-  renderTopCards();
-  renderMissionsTable();
-  renderFlightLog();
+  renderHomeStats();
+  renderTokenGrid();
+}
+
+/** Banner stat cards (Material preview layout): tokens launched, 24h
+ * volume, distinct 24h traders, chain. */
+function renderHomeStats(): void {
+  const box = $("#home-stats");
+  if (!box) return;
+  box.innerHTML = "";
+  let volume24h = 0;
+  for (const l of state.launches) volume24h += launchDayStats(l)?.volumeWeth ?? 0;
+  const traders = new Set<string>();
+  for (const t of state.dayTrades) traders.add(t.trader.toLowerCase());
+  const stats: Array<{ value: string; label: string; sub?: string }> = [
+    { value: String(state.launches.length), label: "Tokens launched" },
+    { value: `${formatDisplayNumber(volume24h)} ETH`, label: "24h volume" },
+    { value: String(traders.size), label: "24h traders" },
+    { value: "GIWA Sepolia", label: "Chain", sub: "Chain ID 91342" },
+  ];
+  for (const s of stats) {
+    const card = el("div", "stat-card");
+    card.appendChild(el("div", "stat-value", s.value));
+    card.appendChild(el("div", "stat-label", s.label));
+    if (s.sub) card.appendChild(el("div", "stat-sub", s.sub));
+    box.appendChild(card);
+  }
+}
+
+/** Token card grid (Material preview layout) — one card per filtered
+ * launch; click opens the detail page. */
+function renderTokenGrid(): void {
+  const box = $("#token-grid");
+  if (!box) return;
+  box.innerHTML = "";
+  const items = filteredLaunches();
+  if (items.length === 0) {
+    box.appendChild(el("div", "empty", state.launches.length === 0
+      ? "No launches found yet on this deployment. Be the first — create a launch."
+      : "No launches match this filter."));
+    return;
+  }
+  const nowMs = state.chainHead?.timeMs ?? Date.now();
+  for (const l of items) {
+    const card = el("div", "card token-card");
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    card.onclick = () => openDetail(l);
+    card.onkeydown = (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDetail(l); }
+    };
+    const top = el("div", "token-card-top");
+    top.appendChild(tokenTile(l, "lg"));
+    const names = el("div", "token-card-names");
+    names.appendChild(el("div", "token-card-name", l.meta?.name ?? shortAddr(l.token)));
+    names.appendChild(el("span", "sym-chip", `$${l.meta?.symbol ?? shortAddr(l.token)}`));
+    top.appendChild(names);
+    if (fuelLabel(l) === "Graduated") {
+      top.appendChild(el("span", "badge status-3 grad-badge", "Graduated"));
+    }
+    card.appendChild(top);
+    const metrics = el("div", "token-card-metrics");
+    const mcap = launchMcap(l);
+    const mcapMetric = el("div", "metric");
+    mcapMetric.appendChild(el("div", "metric-value", mcap === null ? "…" : `${formatDisplayNumber(mcap)} ETH`));
+    mcapMetric.appendChild(el("div", "metric-label", "Market cap"));
+    metrics.appendChild(mcapMetric);
+    const chg = launchChange24h(l);
+    const chgMetric = el("div", "metric");
+    chgMetric.appendChild(el("div", `metric-value ${chg === null ? "" : chg >= 0 ? "chart-up" : "chart-down"}`, chg === null ? "—" : formatPercentChange(chg)));
+    chgMetric.appendChild(el("div", "metric-label", "24h"));
+    metrics.appendChild(chgMetric);
+    card.appendChild(metrics);
+    const progress = el("div", "token-card-progress");
+    const pct = l.curveData ? l.curveData.progress.progressBps / 100 : null;
+    const progressHead = el("div", "progress-head");
+    progressHead.appendChild(el("span", "", "Bonding curve"));
+    progressHead.appendChild(el("span", "progress-pct", pct === null ? "…" : `${pct.toFixed(1)}%`));
+    progress.appendChild(progressHead);
+    const bar = el("div", "bar");
+    const fill = el("div", "bar-fill");
+    fill.style.width = `${pct === null ? 0 : Math.min(100, Math.max(0, pct))}%`;
+    bar.appendChild(fill);
+    progress.appendChild(bar);
+    card.appendChild(progress);
+    const foot = el("div", "token-card-foot");
+    foot.appendChild(el("span", "token-card-creator", shortAddr(l.creator)));
+    foot.appendChild(el("span", "token-card-age", formatLaunchAge(l, nowMs)));
+    card.appendChild(foot);
+    box.appendChild(card);
+  }
 }
 
 /** "My launches" list (Profile) — the same table as the Discover Missions
@@ -4270,6 +4361,12 @@ async function boot(): Promise<void> {
 
   $("#tab-discover").onclick = () => { try { history.replaceState(null, "", "#discover"); } catch { /* non-fatal */ } showView("discover"); renderDiscover(); ensureBackgroundStarted(); };
   $("#tab-create").onclick = () => { try { history.replaceState(null, "", "#create"); } catch { /* non-fatal */ } showView("create"); void loadConfigsForForm(); };
+  // Discover banner CTAs (Material preview layout): Create mirrors the
+  // Create tab; How it works smooth-scrolls to the steps section.
+  const bannerCreate = document.querySelector<HTMLButtonElement>("#banner-create");
+  if (bannerCreate) bannerCreate.onclick = () => { try { history.replaceState(null, "", "#create"); } catch { /* non-fatal */ } showView("create"); void loadConfigsForForm(); };
+  const bannerHow = document.querySelector<HTMLButtonElement>("#banner-how");
+  if (bannerHow) bannerHow.onclick = () => { document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" }); };
   $("#tab-swap").onclick = () => { try { history.replaceState(null, "", "#swap"); } catch { /* non-fatal */ } showView("swap"); renderSwap(); ensureBackgroundStarted(); };
   $("#tab-docs").onclick = () => { try { history.replaceState(null, "", "#docs"); } catch { /* non-fatal */ } showView("docs"); ensureBackgroundStarted(); };
   // Mobile hamburger nav: the same Discover / Create Launch actions as the

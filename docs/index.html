@@ -62,25 +62,36 @@
   <div id="recent-row" class="recent-row hidden"></div>
 
   <section id="view-discover">
-    <div id="home-hero"></div>
-    <div id="home-top"></div>
-    <div class="home-lower">
-      <div id="home-missions">
-        <div class="missions-head">
-          <h2>Token</h2>
-          <div class="missions-tabs">
-            <button id="mtab-trending" class="btn chip active">Trending</button>
-            <button id="mtab-new" class="btn chip">New</button>
-            <!-- Temporarily hidden 2026-11-17 (user order): restore by removing "hidden". -->
-            <button id="mtab-near" class="btn chip hidden">Near graduation</button>
-            <button id="mtab-graduated" class="btn chip">Graduated</button>
-          </div>
-          <button id="mine-toggle" class="btn chip hidden">My launches</button>
-          <button id="refresh-btn" class="btn">↻ Refresh</button>
-        </div>
-        <div id="missions-table"></div>
+    <div class="home-banner">
+      <span class="banner-eyebrow">● Live on GIWA Sepolia · Testnet</span>
+      <h1 class="banner-title">Launch your token on GIWA,<br>in seconds.</h1>
+      <p class="banner-sub">Create a token, watch it climb the bonding curve, and trade it — no code, no pre-sale, fair launch for everyone.</p>
+      <div class="banner-cta">
+        <button class="btn primary" id="banner-create">Create Token</button>
+        <button class="btn" id="banner-how">How it works</button>
       </div>
-      <aside id="home-flight" class="panel"></aside>
+      <div class="banner-stats" id="home-stats"></div>
+    </div>
+    <div class="missions-head">
+      <h2>Trending now</h2>
+      <div class="missions-tabs">
+        <button id="mtab-trending" class="btn chip active">Trending</button>
+        <button id="mtab-new" class="btn chip">New</button>
+        <!-- Temporarily hidden 2026-11-17 (user order): restore by removing "hidden". -->
+        <button id="mtab-near" class="btn chip hidden">Near graduation</button>
+        <button id="mtab-graduated" class="btn chip">Graduated</button>
+      </div>
+      <button id="mine-toggle" class="btn chip hidden">My launches</button>
+      <button id="refresh-btn" class="btn">↻ Refresh</button>
+    </div>
+    <div id="token-grid"></div>
+    <div class="how-it-works" id="how-it-works">
+      <h2>How it works</h2>
+      <div class="how-grid">
+        <div class="how-card"><span class="how-num">1</span><h3>Create</h3><p>Pick a name, ticker and image. Your token launches on a bonding curve instantly — no liquidity to add.</p></div>
+        <div class="how-card"><span class="how-num">2</span><h3>Trade the curve</h3><p>Anyone can buy and sell. Price rises as more ETH flows in; every trade is on-chain and transparent.</p></div>
+        <div class="how-card"><span class="how-num">3</span><h3>Graduate</h3><p>Fill the curve and the token graduates to a real DEX pool, with liquidity locked automatically.</p></div>
+      </div>
     </div>
     <div id="launch-count" class="muted count"></div>
   </section>
