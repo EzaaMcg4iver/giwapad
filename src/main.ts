@@ -201,6 +201,8 @@ function tokenTile(l: EnrichedLaunch, size: "sm" | "lg" = "sm"): HTMLElement {
     img.src = url;
     img.alt = l.meta?.symbol ?? "";
     img.className = "token-img";
+    img.loading = "lazy";
+    img.decoding = "async";
     img.onerror = () => img.remove();
     wrap.innerHTML = "";
     wrap.appendChild(img);
@@ -951,6 +953,11 @@ function renderHomeStats(): void {
 
 /** Token card grid (Material preview layout) — one card per filtered
  * launch; click opens the detail page. */
+/** How many token cards the Discover grid renders before "Load more" —
+ * rendering all launches (90+) at once is heavy DOM + image loads. */
+let gridLimit = 24;
+const GRID_PAGE = 24;
+
 function renderTokenGrid(): void {
   const box = $("#token-grid");
   if (!box) return;
@@ -963,7 +970,7 @@ function renderTokenGrid(): void {
     return;
   }
   const nowMs = state.chainHead?.timeMs ?? Date.now();
-  for (const l of items) {
+  for (const l of items.slice(0, gridLimit)) {
     const card = el("div", "card token-card");
     card.tabIndex = 0;
     card.setAttribute("role", "button");
@@ -1010,6 +1017,13 @@ function renderTokenGrid(): void {
     foot.appendChild(el("span", "token-card-age", formatLaunchAge(l, nowMs)));
     card.appendChild(foot);
     box.appendChild(card);
+  }
+  if (items.length > gridLimit) {
+    const moreWrap = el("div", "grid-more-wrap");
+    const moreBtn = el("button", "btn grid-more", `Load more (${items.length - gridLimit} more)`) as HTMLButtonElement;
+    moreBtn.onclick = () => { gridLimit += GRID_PAGE; renderTokenGrid(); };
+    moreWrap.appendChild(moreBtn);
+    box.appendChild(moreWrap);
   }
 }
 
@@ -4445,7 +4459,7 @@ async function boot(): Promise<void> {
   $("#refresh-btn").onclick = () => void refreshLaunches();
   // Header search: filters the Missions table live; Enter opens the first match.
   const headerSearch = $("#header-search") as HTMLInputElement;
-  headerSearch.oninput = () => { state.search = headerSearch.value; renderDiscover(); };
+  headerSearch.oninput = () => { state.search = headerSearch.value; gridLimit = GRID_PAGE; renderDiscover(); };
   headerSearch.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       const first = filteredLaunches()[0];
@@ -4467,6 +4481,7 @@ async function boot(): Promise<void> {
   for (const t of ["trending", "new", "near", "graduated"] as const) {
     $(`#mtab-${t}`).onclick = () => {
       state.missionsTab = t;
+      gridLimit = GRID_PAGE;
       for (const g of ["trending", "new", "near", "graduated"] as const) {
         $(`#mtab-${g}`).classList.toggle("active", g === t);
       }
@@ -4475,6 +4490,7 @@ async function boot(): Promise<void> {
   }
   $("#mine-toggle").onclick = () => {
     state.mineOnly = !state.mineOnly;
+    gridLimit = GRID_PAGE;
     $("#mine-toggle").classList.toggle("active", state.mineOnly);
     renderDiscover();
   };

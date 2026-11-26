@@ -987,6 +987,8 @@ body.bg-blobs #bg-blobs { display: block; }
 
 #token-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin-top: 4px; }
 #token-grid .empty { grid-column: 1 / -1; }
+.grid-more-wrap { grid-column: 1 / -1; display: flex; justify-content: center; padding: 8px 0 4px; }
+.grid-more { min-width: 200px; }
 .token-card { border-radius: var(--radius-xl); display: flex; flex-direction: column; }
 .token-card-top { display: flex; gap: 12px; align-items: flex-start; }
 .token-card .token-tile-lg { width: 52px; height: 52px; border-radius: var(--radius); }
