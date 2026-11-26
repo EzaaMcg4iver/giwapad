@@ -590,21 +590,18 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 .balance-val { font-family: ui-monospace, monospace; font-size: var(--text-xs); }
 .detail-tabs .detail-tab-body { margin-top: 8px; }
 
-/* Detail page: no cards — every section (header stats, chart, Status,
-   Trade, tabs) renders flat on the page background, Uniswap-style. Only
-   the outer panel box and the stat-tile boxes go away; inner controls
-   (inputs, buttons, quote box, tabs, tables) keep their own backgrounds,
-   so everything stays usable and readable. */
+/* Detail page: Material 3 elevated surfaces — every section (header
+   stats, chart, Status, Trade, tabs) sits on the standard .panel
+   (surface-container + elevation) with a 1px outline like .card, and
+   the header stats are tonal tiles. Inner controls (inputs, buttons,
+   quote box, tabs, tables) keep their own backgrounds. */
 #view-detail .panel {
-  background: transparent;
-  box-shadow: none;
-  padding-left: 0;
-  padding-right: 0;
+  border: 1px solid var(--border);
 }
 #view-detail .detail-stat {
-  background: transparent;
-  padding-left: 0;
-  padding-right: 0;
+  background: var(--panel2);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
 }
 
 /* Discover page: Material 3 elevated surfaces — hero, Top-by-mcap cards,
@@ -920,17 +917,21 @@ body.bg-blobs #bg-blobs { display: block; }
 .uni-panel .quote-box { background: transparent; border: none; padding: 0; margin: 8px 0 0; font-size: 12px; }
 /* Big full-width action button. */
 .uni-action { width: 100%; justify-content: center; padding: 12px; font-size: 14px; font-weight: 700; border-radius: 14px; margin-top: 12px; }
-/* Swap page glassmorphism — frosted shell panels + token menu over the
-   blob background. Scoped to #view-swap so no other page moves. The flip
-   button and the big action stay solid. */
+/* Swap page Material surfaces — solid elevated shell + inner panels and
+   a raised token menu (no glass). Scoped to #view-swap so no other page
+   moves. The flip button and the big action stay solid. */
 #view-swap .swap-card,
-#view-swap .uni-panel,
+#view-swap .uni-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-1);
+}
 #view-swap .swap-menu {
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  -webkit-backdrop-filter: blur(16px) saturate(1.4);
-  backdrop-filter: blur(16px) saturate(1.4);
-  box-shadow: var(--glass-shadow);
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-2);
 }
 .missions-table td .btn + .btn { margin-left: 6px; }
 
@@ -951,7 +952,7 @@ body.bg-blobs #bg-blobs { display: block; }
 .docs p { line-height: 1.65; margin: 8px 0; }
 .docs ol, .docs ul { line-height: 1.65; margin: 8px 0; padding-left: 20px; }
 .docs li { margin: 4px 0; }
-.docs-toc { padding: 12px; }
+.docs-toc { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-1); padding: 16px; }
 .docs-toc ol { margin: 8px 0 0; }
 .docs-links { list-style: none; padding-left: 0; }
 .docs-links li { margin: 8px 0; }
