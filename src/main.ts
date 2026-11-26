@@ -4560,6 +4560,9 @@ async function boot(): Promise<void> {
     if (h.startsWith("detail/")) void openHashDetail();
     else if (h === "swap" || h.startsWith("swap/")) void openHashSwap();
     else if (h === "docs" || h.startsWith("docs-")) { showView("docs"); ensureBackgroundStarted(); scrollDocsAnchor(h); }
+    else if (h === "create") { showView("create"); void loadConfigsForForm(); ensureBackgroundStarted(); }
+    else if (h === "profile") { showView("profile"); void renderProfile(); ensureBackgroundStarted(); }
+    else if (h === "discover" || h === "") { showView("discover"); renderDiscover(); ensureBackgroundStarted(); }
   });
 
   // Deep links: #discover (default), #create, #profile, #detail/<curve>, #docs.
