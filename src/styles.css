@@ -600,19 +600,25 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
   padding: 10px 12px;
 }
 
+/* Create page: Material 3 elevated surfaces — the mission, preview and
+   summary panels use the standard .panel (surface-container + elevation)
+   with a 1px outline like .card and the detail page. Form controls
+   (inputs, dropzone, buttons) keep their own backgrounds. */
+#view-create .panel {
+  border: 1px solid var(--border);
+}
+
 /* Discover page: Material 3 elevated surfaces — hero, Top-by-mcap cards,
    and the Flight log panel use the standard .card/.panel treatment
    (surface-container + outline + elevation), matching the approved
    Material preview. Content, pills, Trade buttons, and clicks unchanged. */
 
-/* Profile page: no cards either — the Wallet panel and the "Launch saya"
-   table blend with the blob background, same flat treatment as the
-   Discover and detail pages. Buttons/inputs keep their own styling. */
+/* Profile page: Material 3 elevated surfaces — the Wallet panel and the
+   "Launch saya" table sit on the standard .panel (surface-container +
+   elevation) with a 1px outline like .card and the detail page. Inner
+   controls (buttons, inputs, tables) keep their own backgrounds. */
 #view-profile .panel {
-  background: transparent;
-  box-shadow: none;
-  padding-left: 0;
-  padding-right: 0;
+  border: 1px solid var(--border);
 }
 /* The "Launch saya" table reuses .missions-table, but its address cells
    carry the .addr chip class (pill background). On Discover the same
@@ -728,7 +734,7 @@ body.bg-blobs #bg-blobs { display: block; }
 .create-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; flex-wrap: wrap; margin: 12px 0 0; }
 .create-title { font-size: var(--text-4xl); font-weight: 800; margin: 0; line-height: 1.15; letter-spacing: -0.02em; }
 .create-sub { margin: 6px 0 0; }
-.create-infoboxes { display: flex; border-radius: var(--radius); background: var(--panel); overflow: hidden; box-shadow: var(--shadow-1); }
+.create-infoboxes { display: flex; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; box-shadow: var(--shadow-1); }
 .infobox { padding: 10px 16px; display: flex; flex-direction: column; gap: 2px; min-width: 130px; }
 .infobox + .infobox { border-left: 1px solid var(--border); }
 .infobox-k { font-size: var(--text-xs); color: var(--muted); }
